@@ -119,31 +119,6 @@ impl QGramIndex {
             .and_then(|&(idx, _)| self.get_bytes_by_idx(idx))
     }
 
-    fn get_name_by_id(&self, id: u32) -> anyhow::Result<&str> {
-        // name is the first field in a line
-        let &(idx, syn_idx) = self
-            .syn_to_ent
-            .get(usize::try_from(id)?)
-            .ok_or_else(|| anyhow!("invalid id"))?;
-        self.get_bytes_by_idx(idx).and_then(|(_, bytes)| {
-            let mut split = bytes.split(|&b| b == b'\t');
-            if syn_idx == 0 {
-                split
-                    .next()
-                    .ok_or_else(|| anyhow!("missing name field"))
-                    .and_then(|name| std::str::from_utf8(name).map_err(Into::into))
-            } else {
-                let syns = split
-                    .nth(2)
-                    .ok_or_else(|| anyhow!("missing syn field"))
-                    .and_then(|syns| std::str::from_utf8(syns).map_err(Into::into))?;
-                syns.split(';')
-                    .nth(usize::from(syn_idx - 1))
-                    .ok_or_else(|| anyhow!("missing syn field"))
-            }
-        })
-    }
-
     fn get_score_by_id(&self, id: u32) -> anyhow::Result<usize> {
         // score is the second field in a line
         self.get_bytes_by_id(id).and_then(|(_, bytes)| {
@@ -385,6 +360,38 @@ impl QGramIndex {
     #[pyo3(name = "sub_index_by_indices")]
     pub fn py_sub_index_by_indices(&self, indices: Vec<u32>) -> anyhow::Result<Self> {
         self.sub_index_by_indices(&indices)
+    }
+
+    pub fn get_name_by_id(&self, id: u32) -> anyhow::Result<&str> {
+        // name is the first field in a line
+        let &(idx, syn_idx) = self
+            .syn_to_ent
+            .get(usize::try_from(id)?)
+            .ok_or_else(|| anyhow!("invalid id"))?;
+        self.get_bytes_by_idx(idx).and_then(|(_, bytes)| {
+            let mut split = bytes.split(|&b| b == b'\t');
+            if syn_idx == 0 {
+                split
+                    .next()
+                    .ok_or_else(|| anyhow!("missing name field"))
+                    .and_then(|name| std::str::from_utf8(name).map_err(Into::into))
+            } else {
+                let syns = split
+                    .nth(2)
+                    .ok_or_else(|| anyhow!("missing syn field"))
+                    .and_then(|syns| std::str::from_utf8(syns).map_err(Into::into))?;
+                syns.split(';')
+                    .nth(usize::from(syn_idx - 1))
+                    .ok_or_else(|| anyhow!("missing syn field"))
+            }
+        })
+    }
+
+    pub fn get_idx_by_id(&self, id: u32) -> anyhow::Result<u32> {
+        self.syn_to_ent
+            .get(usize::try_from(id)?)
+            .map(|&(idx, _)| idx)
+            .ok_or_else(|| anyhow!("invalid id"))
     }
 }
 

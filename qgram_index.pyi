@@ -71,7 +71,8 @@ class QGramIndex:
         """
         pass
 
-    def load(self, index_file: str, data_file: str) -> None:
+    @staticmethod
+    def load(index_file: str, data_file: str) -> "QGramIndex":
         """
 
         Loads the index from the given file and data file.
@@ -93,19 +94,28 @@ class QGramIndex:
         only consider names which have at least one q-gram in common with
         the query.
 
-        It returns a list of (ID, PED / ED) ordered first by PED / ED and
-        then entity score.
+        It returns a list of (ID, PED / ED) ordered first by PED / ED
+        ascending and then by score descending.
 
         """
         pass
 
-    def get_syn_by_id(self, id: int) -> str | None:
+    def get_name_by_id(self, id: int) -> str:
         """
 
-        Returns the synonym for the given ID.
-        Returns None if the ID is invalid.
+        Returns the name or synonym for the given ID.
         If the index was built without synonyms, the synonym is always
         equal to the name.
+
+        """
+        pass
+
+    def get_idx_by_id(self, id: int) -> int:
+        """
+
+        Returns the index for the given ID.
+        If the index was built without synonyms, the index is always
+        equal to the ID.
 
         """
         pass

@@ -13,13 +13,6 @@ memmap2 = "0"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 
-[dev-dependencies]
-criterion = "0.5"
-
-[[bench]]
-name = "benchmark"
-harness = false
-
 [profile.release]
 lto = true
 codegen-units = 1

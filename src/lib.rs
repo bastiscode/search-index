@@ -271,11 +271,11 @@ impl QGramIndex {
     }
 
     #[staticmethod]
-    pub fn load(index_file: &str, data_file: &str) -> anyhow::Result<()> {
+    pub fn load(index_file: &str, data_file: &str) -> anyhow::Result<Self> {
         let index_mmap = unsafe { Mmap::map(&File::open(index_file)?)? };
         let mut index: Self = rmp_serde::decode::from_slice(&index_mmap)?;
         index.mmap = Some(Arc::new(unsafe { Mmap::map(&File::open(data_file)?)? }));
-        Ok(())
+        Ok(index)
     }
 
     pub fn save(&self, index_file: &str) -> anyhow::Result<()> {

@@ -17,11 +17,12 @@ pub struct QGramIndex {
     #[pyo3(get)]
     q: usize,
     padding: Vec<char>,
-    inverted_lists: HashMap<String, Vec<(u32, u32)>>,
+    inverted_lists: HashMap<String, Vec<(u32, u8)>>,
     #[serde(skip)]
     mmap: Option<Arc<Mmap>>,
     data: Vec<usize>,
-    syn_to_ent: Vec<(u32, u16)>,
+    syn_to_ent: Vec<u32>,
+    // syn_to_ent: Vec<(u32, u16)>,
     #[pyo3(get)]
     use_syns: bool,
     #[pyo3(get)]
@@ -72,14 +73,16 @@ impl QGramIndex {
 
     fn compute_q_grams(&self, name: &str, full: bool) -> Vec<String> {
         assert!(!name.is_empty());
+        // name can be at most 255 characters long, so the number of
+        // q-grams is at most 255 - q + 1, which fits into a u8
         let padded: Vec<_> = match self.distance {
             Distance::PED => self
                 .padding
                 .clone()
                 .into_iter()
-                .chain(name.chars())
+                .chain(name.chars().take(255))
                 .collect(),
-            Distance::IED => name.chars().collect(),
+            Distance::IED => name.chars().take(255).collect(),
         };
         let q = self.q.min(padded.len());
         let start = if q < self.q && full { 1 } else { q };
@@ -112,11 +115,30 @@ impl QGramIndex {
     }
 
     #[inline]
+    fn get_idx_by_id(&self, id: u32) -> Option<u32> {
+        // perform a binary search to find the id in the syn_to_ent array
+        let mut mid = self.syn_to_ent.len() / 2;
+        let (mut low, mut high) = (0, self.syn_to_ent.len());
+        while low < high {
+            let cur_id = self.syn_to_ent.get(mid).copied()?;
+            let next_id = self.syn_to_ent.get(mid + 1).copied().unwrap_or(u32::MAX);
+            if cur_id <= id && id < next_id {
+                return u32::try_from(mid).ok();
+            } else if id >= next_id {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+            mid = low + (high - low) / 2;
+        }
+        None
+    }
+
+    #[inline]
     fn get_bytes_by_id(&self, id: u32) -> anyhow::Result<(usize, &[u8])> {
-        self.syn_to_ent
-            .get(usize::try_from(id)?)
+        self.get_idx_by_id(id)
             .ok_or_else(|| anyhow!("invalid id"))
-            .and_then(|&(idx, _)| self.get_bytes_by_idx(idx))
+            .and_then(|idx| self.get_bytes_by_idx(idx))
     }
 
     fn get_score_by_id(&self, id: u32) -> anyhow::Result<usize> {
@@ -135,11 +157,18 @@ impl QGramIndex {
         name.to_lowercase()
     }
 
-    fn merge_lists(&self, q_grams: Vec<String>) -> Vec<(u32, u32)> {
+    fn merge_lists(&self, q_grams: Vec<String>) -> Vec<(u32, u8)> {
         q_grams
             .into_iter()
             .fold(HashMap::new(), |mut counts, q_gram| {
-                *counts.entry(q_gram).or_insert(0) += 1;
+                counts
+                    .get_mut(&q_gram)
+                    .map(|count: &mut u8| {
+                        *count = count.saturating_add(1);
+                    })
+                    .unwrap_or_else(|| {
+                        counts.insert(q_gram, 1);
+                    });
                 counts
             })
             .into_iter()
@@ -155,20 +184,16 @@ impl QGramIndex {
             .sorted()
             .fold(vec![], |mut cur, (id, freq)| {
                 match cur.last_mut() {
-                    Some((last_id, last_freq)) if last_id == &id => *last_freq += freq,
+                    Some((last_id, last_freq)) if last_id == &id => {
+                        *last_freq = last_freq.saturating_add(freq)
+                    }
                     _ => cur.push((id, freq)),
                 }
                 cur
             })
     }
 
-    fn add_line(
-        &mut self,
-        line: &str,
-        obj_id: u32,
-        offset: usize,
-        mut syn_id: u32,
-    ) -> anyhow::Result<u32> {
+    fn add_line(&mut self, line: &str, offset: usize, mut syn_id: u32) -> anyhow::Result<u32> {
         self.data.push(offset);
         let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
         // name is first field
@@ -179,53 +204,42 @@ impl QGramIndex {
         let mut names = vec![name];
         // syns are third field
         let syns = fields.nth(1).ok_or(anyhow!("missing synonyms field"))?;
-        if self.use_syns {
+        if self.use_syns && !syns.is_empty() {
             names.extend(syns.split(';'));
         }
 
-        let start_syn_id = syn_id;
-        for (syn_idx, name) in names.into_iter().enumerate() {
+        self.syn_to_ent.push(syn_id);
+        let num_syns = u32::try_from(names.len())?;
+        for name in names {
             // assumes names are already properly normalized (see normalize fn)
             let norm = self.normalize(name);
-            if norm.is_empty() && syn_idx == 0 {
-                return Err(anyhow!(
-                    "normalized name '{norm}' in line {} is empty",
-                    obj_id + 1
-                ));
-            } else if norm.is_empty() {
+            if norm.is_empty() {
+                syn_id += 1;
                 continue;
-            } else if syn_idx > u16::MAX as usize {
-                return Err(anyhow!(
-                    "too many synonyms for '{name}' in line {}, maximum is {}",
-                    obj_id + 1,
-                    u16::MAX
-                ));
             }
             for qgram in self.compute_q_grams(&norm, true) {
                 let list = self.inverted_lists.entry(qgram).or_default();
                 match list.last_mut() {
                     Some((last_syn_id, last_freq)) if last_syn_id == &syn_id => {
-                        *last_freq += 1;
+                        *last_freq = last_freq.saturating_add(1);
                     }
                     _ => {
                         list.push((syn_id, 1));
                     }
                 }
             }
-
-            self.syn_to_ent.push((obj_id, u16::try_from(syn_idx)?));
             syn_id += 1;
         }
-        Ok(syn_id - start_syn_id)
+        Ok(num_syns)
     }
 
     pub fn sub_index_by_indices(&self, indices: &[u32]) -> anyhow::Result<Self> {
         let mut sub_index = Self::new(self.q, self.use_syns, self.distance)?;
         let mut syn_id = 0;
-        for (obj_id, idx) in indices.iter().enumerate() {
+        for idx in indices {
             let (offset, bytes) = self.get_bytes_by_idx(*idx)?;
             let line = self.get_next_line(bytes)?;
-            let n = sub_index.add_line(line, u32::try_from(obj_id)?, offset, syn_id)?;
+            let n = sub_index.add_line(line, offset, syn_id)?;
             syn_id += n;
         }
         sub_index.mmap.clone_from(&self.mmap);
@@ -254,7 +268,6 @@ impl QGramIndex {
         let mut reader = BufReader::new(file);
         let mut line = String::new();
         let mut offset = reader.read_line(&mut line)?;
-        let mut obj_id = 0;
         let mut syn_id = 0;
         loop {
             line.clear();
@@ -262,9 +275,8 @@ impl QGramIndex {
             if line_len == 0 {
                 break;
             }
-            let n = self.add_line(&line, obj_id, offset, syn_id)?;
+            let n = self.add_line(&line, offset, syn_id)?;
             offset += line_len;
-            obj_id += 1;
             syn_id += n;
         }
         Ok(())
@@ -295,7 +307,7 @@ impl QGramIndex {
         }
         let q_grams = self.compute_q_grams(&query, false);
         let delta = delta.unwrap_or_else(|| q_grams.len() / (self.q + 1));
-        let thres = u32::try_from(q_grams.len().saturating_sub(self.q * delta))?;
+        let thres = u8::try_from(q_grams.len().saturating_sub(self.q * delta))?;
         if thres == 0 {
             return Err(anyhow!(
                 "threshold for filtering distance computations must be positive, lower delta"
@@ -364,10 +376,18 @@ impl QGramIndex {
 
     pub fn get_name_by_id(&self, id: u32) -> anyhow::Result<&str> {
         // name is the first field in a line
-        let &(idx, syn_idx) = self
-            .syn_to_ent
-            .get(usize::try_from(id)?)
+        let idx = self
+            .get_idx_by_id(id)
             .ok_or_else(|| anyhow!("invalid id"))?;
+        let start_id = self
+            .syn_to_ent
+            .get(usize::try_from(idx)?)
+            .copied()
+            .ok_or_else(|| anyhow!("invalid idx"))?;
+        if id < start_id {
+            return Err(anyhow!("invalid id"));
+        }
+        let syn_idx = usize::try_from(id - start_id)?;
         self.get_bytes_by_idx(idx).and_then(|(_, bytes)| {
             let mut split = bytes.split(|&b| b == b'\t');
             if syn_idx == 0 {
@@ -381,17 +401,10 @@ impl QGramIndex {
                     .ok_or_else(|| anyhow!("missing syn field"))
                     .and_then(|syns| std::str::from_utf8(syns).map_err(Into::into))?;
                 syns.split(';')
-                    .nth(usize::from(syn_idx - 1))
+                    .nth(syn_idx - 1)
                     .ok_or_else(|| anyhow!("missing syn field"))
             }
         })
-    }
-
-    pub fn get_idx_by_id(&self, id: u32) -> anyhow::Result<u32> {
-        self.syn_to_ent
-            .get(usize::try_from(id)?)
-            .map(|&(idx, _)| idx)
-            .ok_or_else(|| anyhow!("invalid id"))
     }
 }
 

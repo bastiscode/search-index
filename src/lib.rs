@@ -22,7 +22,6 @@ pub struct QGramIndex {
     mmap: Option<Arc<Mmap>>,
     data: Vec<usize>,
     syn_to_ent: Vec<u32>,
-    // syn_to_ent: Vec<(u32, u16)>,
     #[pyo3(get)]
     use_syns: bool,
     #[pyo3(get)]
@@ -112,26 +111,6 @@ impl QGramIndex {
             .ok_or_else(|| anyhow!("invalid idx"))?;
         let slice = &mmap[*offset..];
         Ok((*offset, slice))
-    }
-
-    #[inline]
-    fn get_idx_by_id(&self, id: u32) -> Option<u32> {
-        // perform a binary search to find the id in the syn_to_ent array
-        let mut mid = self.syn_to_ent.len() / 2;
-        let (mut low, mut high) = (0, self.syn_to_ent.len());
-        while low < high {
-            let cur_id = self.syn_to_ent.get(mid).copied()?;
-            let next_id = self.syn_to_ent.get(mid + 1).copied().unwrap_or(u32::MAX);
-            if cur_id <= id && id < next_id {
-                return u32::try_from(mid).ok();
-            } else if id >= next_id {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-            mid = low + (high - low) / 2;
-        }
-        None
     }
 
     #[inline]
@@ -339,18 +318,24 @@ impl QGramIndex {
         if self.use_syns {
             matches = matches
                 .into_iter()
-                .sorted_by_key(|&(syn_id, _)| self.syn_to_ent[syn_id as usize])
-                .fold(vec![], |mut acc, (syn_id, dist)| {
-                    if acc.is_empty() {
-                        acc.push((syn_id, dist));
-                    } else if let Some(&(last_syn_id, ..)) = acc.last() {
-                        if self.syn_to_ent[last_syn_id as usize] != self.syn_to_ent[syn_id as usize]
-                        {
+                .map(|(syn_id, dist)| {
+                    (
+                        syn_id,
+                        dist,
+                        self.get_idx_by_id(syn_id).expect("should not happen"),
+                    )
+                })
+                .sorted_by_key(|&(.., ent_id)| ent_id)
+                .fold(
+                    (vec![], 0),
+                    |(mut acc, last_ent_id), (syn_id, dist, ent_id)| {
+                        if acc.is_empty() || last_ent_id != ent_id {
                             acc.push((syn_id, dist));
                         }
-                    }
-                    acc
-                });
+                        (acc, ent_id)
+                    },
+                )
+                .0;
         }
 
         matches.sort_by_key(|&(syn_id, dist)| (dist, Reverse(self.get_score_by_id(syn_id).ok())));
@@ -367,6 +352,26 @@ impl QGramIndex {
         self.get_bytes_by_idx(idx)
             .and_then(|(_, bytes)| self.get_next_line(bytes))
             .map(|s| s.to_string())
+    }
+
+    #[inline]
+    fn get_idx_by_id(&self, id: u32) -> Option<u32> {
+        // perform a binary search to find the id in the syn_to_ent array
+        let mut mid = self.syn_to_ent.len() / 2;
+        let (mut low, mut high) = (0, self.syn_to_ent.len());
+        while low < high {
+            let cur_id = self.syn_to_ent.get(mid).copied()?;
+            let next_id = self.syn_to_ent.get(mid + 1).copied().unwrap_or(u32::MAX);
+            if cur_id <= id && id < next_id {
+                return u32::try_from(mid).ok();
+            } else if id >= next_id {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+            mid = low + (high - low) / 2;
+        }
+        None
     }
 
     #[pyo3(name = "sub_index_by_indices")]

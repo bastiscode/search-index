@@ -279,7 +279,7 @@ impl QGramIndex {
         &self,
         query: &str,
         delta: Option<usize>,
-    ) -> anyhow::Result<Vec<(u32, usize)>> {
+    ) -> anyhow::Result<Vec<(u32, (usize, usize))>> {
         let query = self.normalize(query);
         if query.is_empty() {
             return Err(anyhow!("normalized query is empty"));
@@ -303,12 +303,12 @@ impl QGramIndex {
                 }
                 let name = self.get_name_by_id(syn_id).ok()?;
                 let norm = self.normalize(name);
-                let dist = match self.distance {
-                    Distance::PED => ped(&query, &norm, delta),
+                let (dist, aux) = match self.distance {
+                    Distance::PED => (ped(&query, &norm, delta), 0),
                     Distance::IED => ied(&query, &norm),
                 };
                 if dist <= delta {
-                    Some((syn_id, dist))
+                    Some((syn_id, (dist, aux)))
                 } else {
                     None
                 }
@@ -414,9 +414,9 @@ impl QGramIndex {
 }
 
 #[inline]
-fn ped(x: &str, y: &str, delta: usize) -> usize {
-    let x: Vec<_> = x.chars().collect();
-    let y: Vec<_> = y.chars().collect();
+fn ped(prefix: &str, string: &str, delta: usize) -> usize {
+    let x: Vec<_> = prefix.chars().collect();
+    let y: Vec<_> = string.chars().collect();
     let n = x.len() + 1;
     let m = (n + delta).min(y.len() + 1);
 
@@ -454,9 +454,9 @@ fn ped(x: &str, y: &str, delta: usize) -> usize {
 }
 
 #[inline]
-fn ied(x: &str, y: &str) -> usize {
-    let x: Vec<_> = x.chars().collect();
-    let y: Vec<_> = y.chars().collect();
+fn ied(infix: &str, string: &str) -> (usize, usize) {
+    let x: Vec<_> = infix.chars().collect();
+    let y: Vec<_> = string.chars().collect();
     let n = x.len() + 1;
     let m = y.len() + 1;
 
@@ -479,11 +479,12 @@ fn ied(x: &str, y: &str) -> usize {
     }
 
     // find min over last row
-    matrix[(n - 1) * m..]
+    let ied = matrix[(n - 1) * m..]
         .iter()
         .copied()
         .min()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (ied, string.len().saturating_sub(infix.len()) + ied)
 }
 
 #[cfg(test)]
@@ -502,16 +503,18 @@ mod tests {
 
     #[test]
     fn test_ied() {
-        assert_eq!(ied("frei", "frei"), 0);
-        assert_eq!(ied("frei", "freiburg"), 0);
-        assert_eq!(ied("frei", "breifurg"), 1);
-        assert_eq!(ied("freiburg", "stuttgart"), 7);
-        assert_eq!(ied("", "freiburg"), 0);
-        assert_eq!(ied("", ""), 0);
-        assert_eq!(ied("cat", "dog"), 3);
-        assert_eq!(ied("cat", "the cat sat on the mat"), 0);
-        assert_eq!(ied("university", "the University of Barcelona"), 1);
-        assert_eq!(ied("einstein", "albert einstein jr."), 0);
+        assert_eq!(ied("frei", "frei"), (0, 0));
+        assert_eq!(ied("frei", "freiburg"), (0, 4));
+        assert_eq!(ied("frei", "breifurg"), (1, 5));
+        assert_eq!(ied("freiburg", "stuttgart"), (7, 8));
+        assert_eq!(ied("", "freiburg"), (0, 8));
+        assert_eq!(ied("", ""), (0, 0));
+        assert_eq!(ied("cat", "dog"), (3, 3));
+        assert_eq!(ied("cat", "the cat sat on the mat"), (0, 19));
+        assert_eq!(ied("university", "the University of Barcelona"), (1, 18));
+        assert_eq!(ied("einstein", "albert einstein jr."), (0, 11));
+        assert_eq!(ied("university", "uni"), (7, 7));
+        assert_eq!(ied("uriversity", "uni"), (8, 8));
     }
 }
 

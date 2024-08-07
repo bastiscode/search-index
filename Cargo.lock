@@ -3,6 +3,12 @@
 version = 3
 
 [[package]]
+name = "any_ascii"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea50b14b7a4b9343f8c627a7a53c52076482bd4bdad0a24fd3ec533ed616cc2c"
+
+[[package]]
 name = "anyhow"
 version = "1.0.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -242,19 +248,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qgram-index-rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "itertools",
- "memmap2",
- "pyo3",
- "rayon",
- "rmp-serde",
- "serde",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -319,6 +312,20 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "search-index-rs"
+version = "0.1.0"
+dependencies = [
+ "any_ascii",
+ "anyhow",
+ "itertools",
+ "memmap2",
+ "pyo3",
+ "rayon",
+ "rmp-serde",
+ "serde",
+]
 
 [[package]]
 name = "serde"

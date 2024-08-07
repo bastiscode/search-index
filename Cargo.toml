@@ -1,8 +1,12 @@
 [package]
 publish = false
-name = "qgram-index-rs"
+name = "search-index-rs"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+name = "search_index"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1"
@@ -12,6 +16,7 @@ itertools = "0"
 memmap2 = "0"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
+any_ascii = "0"
 
 [profile.release]
 lto = true

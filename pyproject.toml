@@ -1,7 +1,7 @@
 [project]
-name = "qgram-index"
-description = "Q-gram index backed by Rust"
-version = "0.4.0"
+name = "search-index"
+description = "Search indices backed by Rust"
+version = "0.1.0"
 authors = [
     { name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }
 ]
@@ -9,7 +9,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 
-keywords = ["utilities", "index", "q-gram"]
+keywords = ["utilities", "index", "q-gram", "prefix", "search"]
 
 classifiers = [
     "Programming Language :: Rust",
@@ -22,11 +22,12 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Github = "https://github.com/bastiscode/qgram-index"
+Github = "https://github.com/bastiscode/search-index"
 
 [build-system]
 requires = ["maturin>=1"]
 build-backend = "maturin"
 
 [tool.maturin]
-module-name = "qgram_index"
+python-source = "python"
+module-name = "search_index._internal"

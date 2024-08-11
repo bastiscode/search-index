@@ -1,6 +1,7 @@
 mod data;
 mod prefix;
 mod qgram;
+mod utils;
 
 use prefix::PrefixIndex;
 use pyo3::prelude::*;

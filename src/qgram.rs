@@ -4,30 +4,39 @@ use itertools::Itertools;
 use memmap2::Mmap;
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufWriter, Write};
+use std::iter::repeat;
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::data::IndexData;
+use crate::utils::{list_intersection, normalize, IndexIter};
+
 #[pyclass]
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct QGramIndex {
     #[pyo3(get)]
     q: usize,
-    padding: Vec<char>,
-    inverted_lists: HashMap<String, Vec<(u32, u8)>>,
-    #[serde(skip)]
-    mmap: Option<Arc<Mmap>>,
-    data: Vec<usize>,
-    syn_to_ent: Vec<u32>,
-    #[pyo3(get)]
-    use_syns: bool,
     #[pyo3(get)]
     distance: Distance,
+    data: Arc<IndexData>,
+    qgrams: Arc<Mmap>,
+    qgram_offsets: Arc<[usize]>,
+    qgram_list_lengths: Arc<[usize]>,
+    names: Arc<Mmap>,
+    name_offsets: Arc<[usize]>,
+    name_to_index: Arc<[usize]>,
+    sub_index: Option<Arc<[usize]>>,
 }
 
-#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
+const U64_SIZE: usize = size_of::<u64>();
+const U32_SIZE: usize = size_of::<u32>();
+const U16_SIZE: usize = size_of::<u16>();
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Distance {
     #[default]
     Ped,
@@ -56,114 +65,105 @@ impl FromPyObject<'_> for Distance {
 }
 
 impl QGramIndex {
-    fn new(q: usize, use_syns: bool, distance: Distance) -> anyhow::Result<Self> {
-        if q == 0 {
-            return Err(anyhow!("q must be positive"));
-        }
-        Ok(QGramIndex {
-            q,
-            padding: vec!['$'; q - 1],
-            use_syns,
-            distance,
-            ..Self::default()
-        })
-    }
-
-    fn compute_q_grams(&self, name: &str, full: bool) -> Vec<String> {
-        assert!(!name.is_empty());
-        // name can be at most 255 characters long, so the number of
-        // q-grams is at most 255 - q + 1, which fits into a u8
-        let padded: Vec<_> = match self.distance {
-            Distance::Ped => self
-                .padding
-                .clone()
-                .into_iter()
-                .chain(name.chars().take(255))
-                .collect(),
-            Distance::Ied => name.chars().take(255).collect(),
+    #[inline]
+    fn compute_q_grams(name: &str, q: usize, distance: Distance, full: bool) -> Vec<String> {
+        assert!(!name.is_empty(), "name must not be empty");
+        assert!(q > 0, "q must be greater than 0");
+        let chars: Vec<_> = match distance {
+            Distance::Ped => repeat('$').take(q - 1).chain(name.chars()).collect(),
+            Distance::Ied => name.chars().collect(),
         };
-        let q = self.q.min(padded.len());
-        let start = if q < self.q && full { 1 } else { q };
-        (start..=q)
-            .flat_map(|i| padded.windows(i).map(|window| window.iter().collect()))
+        let start = if chars.len() < q && full {
+            assert_eq!(
+                distance,
+                Distance::Ied,
+                "smaller q-grams only allowed for IED"
+            );
+            1
+        } else {
+            q.min(chars.len())
+        };
+        (start..=q.min(chars.len()))
+            .flat_map(|i| chars.windows(i).map(|window| window.iter().collect()))
             .collect()
     }
 
-    #[inline]
-    fn get_next_line<'l>(&self, bytes: &'l [u8]) -> anyhow::Result<&'l str> {
-        let len = bytes
-            .iter()
-            .position(|&b| b == b'\n')
-            .unwrap_or(bytes.len());
-        Ok(std::str::from_utf8(&bytes[..len])?)
+    fn size(&self) -> usize {
+        self.qgram_offsets.len()
     }
 
     #[inline]
-    fn get_bytes_by_idx(&self, idx: u32) -> anyhow::Result<(usize, &[u8])> {
-        let mmap = self
-            .mmap
-            .as_ref()
-            .ok_or_else(|| anyhow!("index not built or loaded"))?;
-        let offset = self
-            .data
-            .get(usize::try_from(idx)?)
-            .ok_or_else(|| anyhow!("invalid idx"))?;
-        let slice = &mmap[*offset..];
-        Ok((*offset, slice))
+    fn get_qgram(&self, index: usize) -> (&[u8], (usize, usize)) {
+        let start = self.qgram_offsets[index];
+        let next_start = self
+            .qgram_offsets
+            .get(index + 1)
+            .copied()
+            .unwrap_or_else(|| self.qgrams.len());
+        let length = self.qgram_list_lengths[index];
+        let end = next_start - (U32_SIZE + U16_SIZE) * length;
+        (&self.qgrams[start..end], (end, next_start))
     }
 
-    #[inline]
-    fn get_bytes_by_id(&self, id: u32) -> anyhow::Result<(usize, &[u8])> {
-        self.get_idx_by_id(id)
-            .ok_or_else(|| anyhow!("invalid id"))
-            .and_then(|idx| self.get_bytes_by_idx(idx))
+    fn get_inverted_list(&self, q_gram: &str, count: usize) -> Option<Vec<(usize, usize)>> {
+        // do binary search in offsets
+        let mut lower = 0;
+        let mut upper = self.size();
+        while lower < upper {
+            let mid = (lower + upper) / 2;
+            let (mid_qgram, (start, end)) = self.get_qgram(mid);
+            match mid_qgram.cmp(q_gram.as_bytes()) {
+                Ordering::Less => lower = mid + 1,
+                Ordering::Greater => upper = mid,
+                Ordering::Equal => {
+                    let inv_list = self.parse_inverted_list(start, end, count);
+                    return Some(inv_list);
+                }
+            }
+        }
+        None
     }
 
-    fn get_score_by_id(&self, id: u32) -> anyhow::Result<usize> {
-        // score is the second field in a line
-        self.get_bytes_by_id(id).and_then(|(_, bytes)| {
-            bytes
-                .split(|&b| b == b'\t')
-                .nth(1)
-                .ok_or_else(|| anyhow!("missing score field"))
-                .and_then(|score| std::str::from_utf8(score).map_err(Into::into))
-                .and_then(|score| score.parse().map_err(Into::into))
-        })
+    fn parse_inverted_list(&self, start: usize, end: usize, count: usize) -> Vec<(usize, usize)> {
+        self.qgrams[start..end]
+            .chunks_exact(U32_SIZE + U16_SIZE)
+            .filter_map(|bytes| {
+                let mut id_bytes = [0; U32_SIZE];
+                id_bytes.copy_from_slice(&bytes[..U32_SIZE]);
+                let id = u32::from_le_bytes(id_bytes) as usize;
+                if let Some(sub_index) = self.sub_index.as_ref() {
+                    if sub_index.binary_search(&id).is_err() {
+                        return None;
+                    }
+                }
+                let mut freq_bytes = [0; U16_SIZE];
+                freq_bytes.copy_from_slice(&bytes[U32_SIZE..]);
+                let freq = u16::from_le_bytes(freq_bytes) as usize;
+                Some((id, count.min(freq)))
+            })
+            .collect()
     }
 
-    fn normalize(&self, name: &str) -> String {
-        name.to_lowercase()
-    }
-
-    fn merge_lists(&self, q_grams: Vec<String>) -> Vec<(u32, u8)> {
+    fn merge_lists(&self, q_grams: &[String]) -> Vec<(usize, usize)> {
         q_grams
-            .into_iter()
+            .iter()
             .fold(HashMap::new(), |mut counts, q_gram| {
                 counts
                     .get_mut(&q_gram)
-                    .map(|count: &mut u8| {
-                        *count = count.saturating_add(1);
-                    })
+                    .map(|count: &mut usize| *count += 1)
                     .unwrap_or_else(|| {
                         counts.insert(q_gram, 1);
                     });
                 counts
             })
             .into_iter()
-            .filter_map(|(q_gram, count)| {
-                let intersect_list = self.inverted_lists.get(&q_gram)?;
-                Some(
-                    intersect_list
-                        .iter()
-                        .map(move |&(id, freq)| (id, count.min(freq))),
-                )
-            })
+            .filter_map(|(q_gram, count)| self.get_inverted_list(q_gram, count))
             .flatten()
             .sorted()
             .fold(vec![], |mut cur, (id, freq)| {
                 match cur.last_mut() {
                     Some((last_id, last_freq)) if last_id == &id => {
-                        *last_freq = last_freq.saturating_add(freq)
+                        *last_freq += freq;
                     }
                     _ => cur.push((id, freq)),
                 }
@@ -171,249 +171,276 @@ impl QGramIndex {
             })
     }
 
-    fn add_line(&mut self, line: &str, offset: usize, mut syn_id: u32) -> anyhow::Result<u32> {
-        self.data.push(offset);
-        let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
-        // name is first field
-        let name = fields.next().ok_or(anyhow!("missing name field"))?;
-        if name.is_empty() {
-            return Err(anyhow!("name must not be empty"));
-        }
-        let mut names = vec![name];
-        // syns are third field
-        let syns = fields.nth(1).ok_or(anyhow!("missing synonyms field"))?;
-        if self.use_syns && !syns.is_empty() {
-            names.extend(syns.split(';'));
-        }
-
-        self.syn_to_ent.push(syn_id);
-        let num_syns = u32::try_from(names.len())?;
-        for name in names {
-            // assumes names are already properly normalized (see normalize fn)
-            let norm = self.normalize(name);
-            if norm.is_empty() {
-                syn_id += 1;
-                continue;
-            }
-            for qgram in self.compute_q_grams(&norm, true) {
-                let list = self.inverted_lists.entry(qgram).or_default();
-                match list.last_mut() {
-                    Some((last_syn_id, last_freq)) if last_syn_id == &syn_id => {
-                        *last_freq = last_freq.saturating_add(1);
-                    }
-                    _ => {
-                        list.push((syn_id, 1));
-                    }
-                }
-            }
-            syn_id += 1;
-        }
-        Ok(num_syns)
+    fn get_normalized_name(&self, name_id: usize) -> Option<&str> {
+        let start = self.name_offsets.get(name_id).copied()?;
+        let end = self
+            .name_offsets
+            .get(name_id + 1)
+            .copied()
+            .unwrap_or_else(|| self.names.len());
+        std::str::from_utf8(&self.names[start..end]).ok()
     }
 
-    pub fn sub_index_by_indices(&self, indices: &[u32]) -> anyhow::Result<Self> {
-        let mut sub_index = Self::new(self.q, self.use_syns, self.distance)?;
-        let mut syn_id = 0;
-        for idx in indices {
-            let (offset, bytes) = self.get_bytes_by_idx(*idx)?;
-            let line = self.get_next_line(bytes)?;
-            let n = sub_index.add_line(line, offset, syn_id)?;
-            syn_id += n;
-        }
-        sub_index.mmap.clone_from(&self.mmap);
-        Ok(sub_index)
+    fn get_index(&self, name_id: usize) -> Option<usize> {
+        self.name_to_index.get(name_id).copied()
     }
 }
 
+pub type Ranking = (usize, usize, usize);
+
 #[pymethods]
 impl QGramIndex {
-    #[new]
-    #[pyo3(signature = (q, use_syns = true, distance = Distance::Ped))]
-    pub fn py_new(q: usize, use_syns: bool, distance: Distance) -> anyhow::Result<Self> {
-        Self::new(q, use_syns, distance)
-    }
+    #[staticmethod]
+    #[pyo3(signature = (data_file, index_dir, q = 3, distance = Distance::Ied, use_synonyms = true))]
+    pub fn build(
+        data_file: &str,
+        index_dir: &str,
+        q: usize,
+        distance: Distance,
+        use_synonyms: bool,
+    ) -> anyhow::Result<()> {
+        let data = IndexData::new(data_file)?;
+        let mut inverted_lists: HashMap<String, Vec<(u32, u16)>> = HashMap::new();
 
-    pub fn __len__(&self) -> usize {
-        self.data.len()
-    }
+        let index_dir = Path::new(index_dir);
+        let mut name_file = BufWriter::new(File::create(index_dir.join("index.names"))?);
+        let mut name_offset_file =
+            BufWriter::new(File::create(index_dir.join("index.name-offsets"))?);
 
-    pub fn build(&mut self, data_file: &str) -> anyhow::Result<()> {
-        if self.mmap.is_some() {
-            return Err(anyhow!("index already built or loaded"));
-        }
-        let file = File::open(data_file)?;
-        self.mmap = Some(Arc::new(unsafe { Mmap::map(&file)? }));
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        let mut offset = reader.read_line(&mut line)?;
-        let mut syn_id = 0;
-        loop {
-            line.clear();
-            let line_len = reader.read_line(&mut line)?;
-            if line_len == 0 {
-                break;
+        let mut name_offset = 0;
+        let mut name_id = 0;
+        for (i, row) in data.iter().enumerate() {
+            let mut split = row.split("\t");
+            let name = normalize(
+                split
+                    .next()
+                    .ok_or_else(|| anyhow!("name not found in row {i}: {row}"))?,
+            );
+            let mut names = vec![name];
+            if use_synonyms {
+                names.extend(
+                    split
+                        .nth(1)
+                        .ok_or_else(|| anyhow!("synonyms not found in row {i}: {row}"))?
+                        .split(';')
+                        .map(normalize),
+                );
             }
-            let n = self.add_line(&line, offset, syn_id)?;
-            offset += line_len;
-            syn_id += n;
+            for name in names.into_iter().filter(|s| !s.is_empty()) {
+                let q_grams = Self::compute_q_grams(&name, q, distance, true);
+                for qgram in q_grams {
+                    let list = inverted_lists.entry(qgram).or_default();
+                    match list.last_mut() {
+                        Some((last_id, last_freq)) if last_id == &name_id => {
+                            *last_freq = last_freq.saturating_add(1);
+                        }
+                        _ => {
+                            list.push((name_id, 1));
+                        }
+                    }
+                }
+                if name_id == u32::MAX {
+                    return Err(anyhow!("too many names, max {} supported", u32::MAX));
+                }
+                name_id += 1;
+                name_file.write_all(name.as_bytes())?;
+                let name_offset_bytes = u64::try_from(name_offset)?.to_le_bytes();
+                name_offset_file.write_all(&name_offset_bytes)?;
+                name_offset += name.len();
+                let name_to_index_bytes = u64::try_from(i)?.to_le_bytes();
+                name_offset_file.write_all(&name_to_index_bytes)?;
+            }
         }
+
+        // sort inverted lists by q-gram
+        let mut qgram_index_file = BufWriter::new(File::create(index_dir.join("index.qgrams"))?);
+        let mut qgram_offset_file =
+            BufWriter::new(File::create(index_dir.join("index.qgram-offsets"))?);
+        let mut qgram_offset = 0;
+        for (qgram, inv_list) in inverted_lists
+            .into_iter()
+            .sorted_by(|(a, _), (b, _)| a.cmp(b))
+        {
+            qgram_index_file.write_all(qgram.as_bytes())?;
+            let offset_bytes = u64::try_from(qgram_offset)?.to_le_bytes();
+            qgram_offset_file.write_all(&offset_bytes)?;
+            qgram_offset += qgram.len();
+            let length_bytes = u64::try_from(inv_list.len())?.to_le_bytes();
+            qgram_offset_file.write_all(&length_bytes)?;
+            for (id, freq) in inv_list {
+                let id_bytes = id.to_le_bytes();
+                qgram_index_file.write_all(&id_bytes)?;
+                qgram_offset += id_bytes.len();
+                let freq_bytes = freq.to_le_bytes();
+                qgram_index_file.write_all(&freq_bytes)?;
+                qgram_offset += freq_bytes.len();
+            }
+        }
+        let mut config_file = BufWriter::new(File::create(index_dir.join("index.config"))?);
+        let mut buffer = vec![];
+        let q_bytes = u64::try_from(q)?.to_le_bytes();
+        buffer.extend_from_slice(&q_bytes);
+        let distance_bytes = match distance {
+            Distance::Ped => 0u64,
+            Distance::Ied => 1u64,
+        }
+        .to_le_bytes();
+        buffer.extend_from_slice(&distance_bytes);
+        config_file.write_all(&buffer)?;
         Ok(())
     }
 
     #[staticmethod]
-    pub fn load(index_file: &str, data_file: &str) -> anyhow::Result<Self> {
-        let index_mmap = unsafe { Mmap::map(&File::open(index_file)?)? };
-        let mut index: Self = rmp_serde::decode::from_slice(&index_mmap)?;
-        index.mmap = Some(Arc::new(unsafe { Mmap::map(&File::open(data_file)?)? }));
-        Ok(index)
-    }
-
-    pub fn save(&self, index_file: &str) -> anyhow::Result<()> {
-        let mut writer = BufWriter::new(File::create(index_file)?);
-        rmp_serde::encode::write(&mut writer, self)?;
-        Ok(())
+    pub fn load(data_file: &str, index_dir: &str) -> anyhow::Result<Self> {
+        let data = Arc::new(IndexData::new(data_file)?);
+        let index_dir = Path::new(index_dir);
+        let qgrams = Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.qgrams"))?)? });
+        let mut qgram_offsets = vec![];
+        let mut qgram_list_lengths = vec![];
+        let offset_bytes =
+            unsafe { Mmap::map(&File::open(index_dir.join("index.qgram-offsets"))?)? };
+        for chunk in offset_bytes.chunks_exact(U64_SIZE * 2) {
+            let mut qgram_offset_bytes = [0; U64_SIZE];
+            qgram_offset_bytes.copy_from_slice(&chunk[..U64_SIZE]);
+            let qgram_offset = u64::from_le_bytes(qgram_offset_bytes) as usize;
+            qgram_offsets.push(qgram_offset);
+            let mut length_bytes = [0; U64_SIZE];
+            length_bytes.copy_from_slice(&chunk[U64_SIZE..]);
+            let length = u64::from_le_bytes(length_bytes) as usize;
+            qgram_list_lengths.push(length);
+        }
+        let names = Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.names"))?)? });
+        let mut name_offsets = vec![];
+        let mut name_to_index = vec![];
+        let offset_bytes =
+            unsafe { Mmap::map(&File::open(index_dir.join("index.name-offsets"))?)? };
+        for chunk in offset_bytes.chunks_exact(U64_SIZE * 2) {
+            let mut name_offset_bytes = [0; U64_SIZE];
+            name_offset_bytes.copy_from_slice(&chunk[..U64_SIZE]);
+            let name_offset = u64::from_le_bytes(name_offset_bytes) as usize;
+            name_offsets.push(name_offset);
+            let mut index_bytes = [0; U64_SIZE];
+            index_bytes.copy_from_slice(&chunk[U64_SIZE..]);
+            let index = u64::from_le_bytes(index_bytes) as usize;
+            name_to_index.push(index);
+        }
+        let config = unsafe { Mmap::map(&File::open(index_dir.join("index.config"))?)? };
+        let mut q_bytes = [0; U64_SIZE];
+        q_bytes.copy_from_slice(&config[..U64_SIZE]);
+        let q = u64::from_le_bytes(q_bytes) as usize;
+        let mut distance_bytes = [0; U64_SIZE];
+        distance_bytes.copy_from_slice(&config[U64_SIZE..]);
+        let distance = match u64::from_le_bytes(distance_bytes) {
+            0 => Distance::Ped,
+            1 => Distance::Ied,
+            _ => return Err(anyhow!("invalid distance")),
+        };
+        Ok(Self {
+            q,
+            distance,
+            data,
+            qgrams,
+            qgram_offsets: qgram_offsets.into(),
+            qgram_list_lengths: qgram_list_lengths.into(),
+            names,
+            name_offsets: name_offsets.into(),
+            name_to_index: name_to_index.into(),
+            sub_index: None,
+        })
     }
 
     pub fn find_matches(
         &self,
         query: &str,
         delta: Option<usize>,
-    ) -> anyhow::Result<Vec<(u32, (usize, usize, usize))>> {
-        let query = self.normalize(query);
+    ) -> anyhow::Result<Vec<(usize, Ranking)>> {
+        let query = normalize(query);
         if query.is_empty() {
-            return Err(anyhow!("normalized query is empty"));
+            return Err(anyhow!("query must not be empty"));
         }
-        let q_grams = self.compute_q_grams(&query, false);
+        let q_grams = Self::compute_q_grams(&query, self.q, self.distance, false);
         let delta = delta.unwrap_or_else(|| q_grams.len() / (self.q + 1));
-        let thres = u8::try_from(q_grams.len().saturating_sub(self.q * delta))?;
+        let thres = q_grams.len().saturating_sub(self.q * delta);
         if thres == 0 {
             return Err(anyhow!(
                 "threshold for filtering distance computations must be positive, lower delta"
             ));
         }
 
-        let merged = self.merge_lists(q_grams);
+        let merged = self.merge_lists(&q_grams);
 
-        let mut matches: Vec<_> = merged
+        let matches: Vec<_> = merged
             .into_par_iter()
-            .filter_map(|(syn_id, num_qgrams)| {
+            .filter_map(|(name_id, num_qgrams)| {
                 if num_qgrams < thres {
                     return None;
                 }
-                let name = self.get_name_by_id(syn_id).ok()?;
-                let norm = self.normalize(name);
+                let name = self.get_normalized_name(name_id)?;
                 let (dist, aux) = match self.distance {
-                    Distance::Ped => (ped(&query, &norm, delta), 0),
-                    Distance::Ied => ied(&query, &norm),
+                    Distance::Ped => (ped(&query, name, delta), 0),
+                    Distance::Ied => ied(&query, name),
                 };
                 if dist <= delta {
-                    let score = self.get_score_by_id(syn_id).ok()?;
-                    Some((syn_id, (dist, aux, score)))
+                    Some((name_id, (dist, aux)))
                 } else {
                     None
                 }
             })
             .collect();
 
-        if self.use_syns {
-            // remove duplicates
-            matches = matches
-                .into_iter()
-                .map(|(syn_id, dist)| {
-                    (
-                        syn_id,
-                        dist,
-                        self.get_idx_by_id(syn_id).expect("should not happen"),
-                    )
-                })
-                .sorted_by_key(|&(.., ent_id)| ent_id)
-                .fold(
-                    (vec![], 0),
-                    |(mut acc, last_ent_id), (syn_id, dist, ent_id)| {
-                        if acc.is_empty() || last_ent_id != ent_id {
-                            acc.push((syn_id, dist));
-                        }
-                        (acc, ent_id)
-                    },
-                )
-                .0;
+        Ok(matches
+            .into_iter()
+            .filter_map(|(name_id, dist)| {
+                let index = self.get_index(name_id)?;
+                Some((index, dist))
+            })
+            .sorted()
+            .unique_by(|&(index, ..)| index)
+            .filter_map(|(index, (first, second))| {
+                let score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
+                Some((index, (first, second, score)))
+            })
+            .sorted_by_key(|&(_, (first, second, score))| (first, second, Reverse(score)))
+            .collect())
+    }
+
+    pub fn get_name(&self, id: usize) -> anyhow::Result<&str> {
+        self.data
+            .get_val(id, 0)
+            .ok_or_else(|| anyhow!("invalid id"))
+    }
+
+    pub fn get_row(&self, id: usize) -> anyhow::Result<&str> {
+        self.data.get_row(id).ok_or_else(|| anyhow!("invalid id"))
+    }
+
+    pub fn get_val(&self, id: usize, column: usize) -> anyhow::Result<&str> {
+        self.data
+            .get_val(id, column)
+            .ok_or_else(|| anyhow!("invalid id or column"))
+    }
+
+    pub fn sub_index_by_ids(&self, mut ids: Vec<usize>) -> anyhow::Result<Self> {
+        if !ids.iter().all(|&id| id < self.data.len()) {
+            return Err(anyhow!("invalid ids"));
         }
-
-        matches.sort_by_key(|&(_, (first, second, score))| (first, second, Reverse(score)));
-        Ok(matches)
-    }
-
-    pub fn get_data_by_id(&self, id: u32) -> anyhow::Result<String> {
-        self.get_bytes_by_id(id)
-            .and_then(|(_, bytes)| self.get_next_line(bytes))
-            .map(|s| s.to_string())
-    }
-
-    pub fn get_data_by_idx(&self, idx: u32) -> anyhow::Result<String> {
-        self.get_bytes_by_idx(idx)
-            .and_then(|(_, bytes)| self.get_next_line(bytes))
-            .map(|s| s.to_string())
-    }
-
-    #[inline]
-    fn get_idx_by_id(&self, id: u32) -> Option<u32> {
-        if !self.use_syns {
-            return Some(id);
+        ids.sort();
+        if let Some(sub_index) = self.sub_index.as_ref() {
+            ids = list_intersection(sub_index, &ids);
         }
-        // perform a binary search to find the id in the syn_to_ent array
-        let mut mid = self.syn_to_ent.len() / 2;
-        let (mut low, mut high) = (0, self.syn_to_ent.len());
-        while low < high {
-            let cur_id = self.syn_to_ent.get(mid).copied()?;
-            let next_id = self.syn_to_ent.get(mid + 1).copied().unwrap_or(u32::MAX);
-            if cur_id <= id && id < next_id {
-                return u32::try_from(mid).ok();
-            } else if id >= next_id {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-            mid = low + (high - low) / 2;
-        }
-        None
+        let mut index = self.clone();
+        index.sub_index = Some(ids.into());
+        Ok(index)
     }
 
-    #[pyo3(name = "sub_index_by_indices")]
-    pub fn py_sub_index_by_indices(&self, indices: Vec<u32>) -> anyhow::Result<Self> {
-        self.sub_index_by_indices(&indices)
+    pub fn __len__(&self) -> usize {
+        self.sub_index
+            .as_ref()
+            .map_or(self.data.len(), |sub_index| sub_index.len())
     }
 
-    pub fn get_name_by_id(&self, id: u32) -> anyhow::Result<&str> {
-        // name is the first field in a line
-        let idx = self
-            .get_idx_by_id(id)
-            .ok_or_else(|| anyhow!("invalid id"))?;
-        let start_id = self
-            .syn_to_ent
-            .get(usize::try_from(idx)?)
-            .copied()
-            .ok_or_else(|| anyhow!("invalid idx"))?;
-        if id < start_id {
-            return Err(anyhow!("invalid id"));
-        }
-        let syn_idx = usize::try_from(id - start_id)?;
-        self.get_bytes_by_idx(idx).and_then(|(_, bytes)| {
-            let mut split = bytes.split(|&b| b == b'\t');
-            if syn_idx == 0 {
-                split
-                    .next()
-                    .ok_or_else(|| anyhow!("missing name field"))
-                    .and_then(|name| std::str::from_utf8(name).map_err(Into::into))
-            } else {
-                let syns = split
-                    .nth(2)
-                    .ok_or_else(|| anyhow!("missing syn field"))
-                    .and_then(|syns| std::str::from_utf8(syns).map_err(Into::into))?;
-                syns.split(';')
-                    .nth(syn_idx - 1)
-                    .ok_or_else(|| anyhow!("missing syn field"))
-            }
-        })
+    pub fn __iter__(&self) -> IndexIter {
+        IndexIter::new(self.data.clone(), self.sub_index.clone())
     }
 }
 

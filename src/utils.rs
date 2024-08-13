@@ -74,14 +74,5 @@ pub(crate) fn list_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
             }
         }
     }
-    // add remaining elements
-    while i < a.len() {
-        result.push(a[i]);
-        i += 1;
-    }
-    while j < b.len() {
-        result.push(b[j]);
-        j += 1;
-    }
     result
 }

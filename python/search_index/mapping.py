@@ -1,5 +1,5 @@
 import mmap
-from search_index import SearchIndex
+from search_index.index import SearchIndex
 
 
 class Mapping:
@@ -28,7 +28,6 @@ class Mapping:
         """
         map: dict[str, int] = {}
         for i, data in enumerate(search_index):
-            data = search_index.get_data_by_idx(i)
             split = data.rstrip("\r\n").split("\t")
             assert len(split) > identifier_column, \
                 f"identifier column not found for index {i}"
@@ -57,7 +56,7 @@ class Mapping:
             middle = (lower + upper) // 2
             bytes = self.mapping[middle * 8: (middle + 1) * 8]
             index = int.from_bytes(bytes, "little")
-            ident = self.search_index.get_column_by_idx(
+            ident = self.search_index.get_val(
                 index,
                 self.identifier_column
             )

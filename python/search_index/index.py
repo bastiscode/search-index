@@ -23,7 +23,7 @@ class SearchIndex:
         An example line:
             Albert Einstein\t275\tEinstein;A. Einstein\tGerman physicist\t
         """
-        pass
+        ...
 
     @staticmethod
     def load(data_file: str, index_dir: str, **kwargs: Any) -> "SearchIndex":
@@ -32,7 +32,7 @@ class SearchIndex:
         Loads the index from the given data file and index directory.
 
         """
-        pass
+        ...
 
     def find_matches(
         self,
@@ -45,7 +45,7 @@ class SearchIndex:
         and ranking key for all matches for the given query.
 
         """
-        pass
+        ...
 
     def get_name(self, id: int) -> str:
         """
@@ -53,7 +53,7 @@ class SearchIndex:
         Returns the name or synonym for the given ID.
 
         """
-        pass
+        ...
 
     def get_row(
         self,
@@ -65,7 +65,7 @@ class SearchIndex:
         ID must be between 0 and the index length.
 
         """
-        pass
+        ...
 
     def get_val(
         self,
@@ -77,7 +77,7 @@ class SearchIndex:
         Returns the column value for the given ID.
 
         """
-        pass
+        ...
 
     def sub_index_by_ids(
         self,
@@ -88,7 +88,7 @@ class SearchIndex:
         Creates a sub-index contating only the given IDs.
 
         """
-        pass
+        ...
 
     def __len__(self) -> int:
         """
@@ -96,7 +96,7 @@ class SearchIndex:
         Returns the number of items in the index.
 
         """
-        pass
+        ...
 
     def __iter__(self) -> Iterator[str]:
         """
@@ -104,78 +104,4 @@ class SearchIndex:
         Iterates over the index data.
 
         """
-        pass
-
-
-class QGramIndex(SearchIndex):
-    """
-
-    A q-gram index for fuzzy prefix or infix search.
-
-    """
-    @property
-    def q(self) -> int:
-        """
-
-        The q in q-grams.
-
-        """
-        pass
-
-    @property
-    def use_syns(self) -> bool:
-        """
-
-        Whether synonyms are used.
-
-        """
-        pass
-
-    @property
-    def distance(self) -> str:
-        """
-
-        The distance function used.
-
-        """
-        pass
-
-    @staticmethod
-    def build(
-        data_file: str,
-        index_dir: str,
-        q: int = 3,
-        use_synonyms: bool = True,
-        distance: str = "ped",
-        **kwargs: Any
-    ) -> None:
-        """
-
-        Builds the index from the given file and saves
-        it in the index dir.
-
-        """
-        pass
-
-
-class PrefixIndex(SearchIndex):
-    """
-
-    A prefix index for keyword prefix search.
-
-    """
-
-    @staticmethod
-    def build(
-        data_file: str,
-        index_dir: str,
-        use_synonyms: bool = True,
-        **kwargs: Any
-    ) -> None:
-        """
-
-        Builds the index from the given file and saves
-        it in the index dir.
-
-        """
-        pass
+        ...

@@ -217,7 +217,7 @@ impl PrefixIndex {
             let mut offset = [0; SIZE];
             let mut num = [0; SIZE];
             offset.copy_from_slice(&chunk[..SIZE]);
-            num.copy_from_slice(&chunk[SIZE * 2..]);
+            num.copy_from_slice(&chunk[SIZE..]);
             offsets.push(u64::from_le_bytes(offset) as usize);
             num_ids.push(u64::from_le_bytes(num) as usize);
         }

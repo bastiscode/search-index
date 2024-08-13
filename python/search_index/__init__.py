@@ -1,2 +1,2 @@
-from search_index.version import __version__
-from search_index._internal import *
+from search_index.index import SearchIndex
+from search_index._internal import QGramIndex, PrefixIndex

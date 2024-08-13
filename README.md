@@ -1,9 +1,9 @@
-## Python package implementing a q-gram index backed by Rust
+## Python package implementing search indices backed by Rust
 
 Install with
 
 ```
-pip install qgram-index
+pip install search-index
 ```
 
 Works on Linux, Windows (64bit) and MacOS

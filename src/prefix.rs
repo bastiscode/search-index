@@ -109,24 +109,21 @@ impl PrefixIndex {
                 Ordering::Less => lower = mid + 1,
                 Ordering::Greater => upper = mid,
                 Ordering::Equal => {
-                    // move to left and right and find all matches
-                    let ids = self.parse_ids(start, end);
-                    return ids
-                        .into_iter()
-                        .chain(
-                            // left to mid
-                            (0..mid)
-                                .rev()
-                                .map(|idx| self.get_ids_on_prefix_match(idx, prefix.as_bytes()))
-                                .take_while(|ids| ids.is_some())
-                                .flat_map(|ids| ids.unwrap()),
-                        )
+                    // find all prefix matches
+                    return (0..mid)
+                        .rev()
+                        .map(|idx| self.get_ids_on_prefix_match(idx, prefix.as_bytes()))
+                        .take_while(|ids| ids.is_some())
+                        .flatten()
+                        .flatten()
+                        .chain(self.parse_ids(start, end))
                         .chain(
                             // mid to right
                             (mid + 1..self.size())
                                 .map(|idx| self.get_ids_on_prefix_match(idx, prefix.as_bytes()))
                                 .take_while(|ids| ids.is_some())
-                                .flat_map(|ids| ids.unwrap()),
+                                .flatten()
+                                .flatten(),
                         )
                         .unique()
                         .collect();
@@ -272,11 +269,11 @@ impl PrefixIndex {
             .ok_or_else(|| anyhow!("invalid id or column"))
     }
 
-    pub fn sub_index_by_ids(&self, mut ids: Vec<usize>) -> anyhow::Result<Self> {
+    pub fn sub_index_by_ids(&self, ids: Vec<usize>) -> anyhow::Result<Self> {
         if !ids.iter().all(|&id| id < self.data.len()) {
             return Err(anyhow!("invalid ids"));
         }
-        ids.sort();
+        let mut ids: Vec<_> = ids.into_iter().unique().sorted().collect();
         if let Some(sub_index) = self.sub_index.as_ref() {
             ids = list_intersection(sub_index, &ids);
         }

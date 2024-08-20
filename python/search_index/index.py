@@ -50,7 +50,7 @@ class SearchIndex:
     def get_name(self, id: int) -> str:
         """
 
-        Returns the name or synonym for the given ID.
+        Returns the name for the given ID.
 
         """
         ...

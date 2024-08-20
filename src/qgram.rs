@@ -132,7 +132,8 @@ impl QGramIndex {
                 id_bytes.copy_from_slice(&bytes[..U32_SIZE]);
                 let id = u32::from_le_bytes(id_bytes) as usize;
                 if let Some(sub_index) = self.sub_index.as_ref() {
-                    if sub_index.binary_search(&id).is_err() {
+                    let idx = self.get_index(id)?;
+                    if sub_index.binary_search(&idx).is_err() {
                         return None;
                     }
                 }
@@ -181,6 +182,7 @@ impl QGramIndex {
         std::str::from_utf8(&self.names[start..end]).ok()
     }
 
+    #[inline]
     fn get_index(&self, name_id: usize) -> Option<usize> {
         self.name_to_index.get(name_id).copied()
     }
@@ -420,11 +422,11 @@ impl QGramIndex {
             .ok_or_else(|| anyhow!("invalid id or column"))
     }
 
-    pub fn sub_index_by_ids(&self, mut ids: Vec<usize>) -> anyhow::Result<Self> {
+    pub fn sub_index_by_ids(&self, ids: Vec<usize>) -> anyhow::Result<Self> {
         if !ids.iter().all(|&id| id < self.data.len()) {
             return Err(anyhow!("invalid ids"));
         }
-        ids.sort();
+        let mut ids: Vec<_> = ids.into_iter().unique().sorted().collect();
         if let Some(sub_index) = self.sub_index.as_ref() {
             ids = list_intersection(sub_index, &ids);
         }

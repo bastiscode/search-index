@@ -45,6 +45,7 @@ impl IndexIter {
     }
 }
 
+#[pyfunction]
 pub(crate) fn normalize(name: &str) -> String {
     if name.is_empty() {
         return String::new();

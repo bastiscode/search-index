@@ -2,6 +2,15 @@ from typing import Any
 from search_index.index import SearchIndex
 
 
+def normalize(s: str) -> str:
+    """
+
+    Normalizes the given string.
+
+    """
+    pass
+
+
 class QGramIndex(SearchIndex):
     """
 

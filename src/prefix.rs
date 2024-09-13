@@ -165,7 +165,7 @@ impl PrefixIndex {
                     split
                         .nth(1)
                         .ok_or_else(|| anyhow!("synonyms not found in row {i}: {row}"))?
-                        .split(';')
+                        .split(";;;")
                         .map(normalize)
                         .flat_map(|syn| {
                             syn.split_whitespace()

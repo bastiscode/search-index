@@ -224,7 +224,7 @@ impl QGramIndex {
                     split
                         .nth(1)
                         .ok_or_else(|| anyhow!("synonyms not found in row {i}: {row}"))?
-                        .split(';')
+                        .split(";;;")
                         .map(normalize),
                 );
             }

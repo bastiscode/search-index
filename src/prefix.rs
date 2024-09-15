@@ -251,7 +251,7 @@ impl PrefixIndex {
                 Ok((id, (count, score)))
             })
             .collect::<anyhow::Result<_>>()?;
-        matches.sort_by_key(|&(_, (count, score))| (Reverse(count), Reverse(score)));
+        matches.sort_by_key(|&(id, (count, score))| (Reverse(count), Reverse(score), id));
         Ok(matches)
     }
 

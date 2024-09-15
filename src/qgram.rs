@@ -402,7 +402,7 @@ impl QGramIndex {
                 let score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
                 Some((index, (first, second, score)))
             })
-            .sorted_by_key(|&(_, (first, second, score))| (first, second, Reverse(score)))
+            .sorted_by_key(|&(id, (first, second, score))| (first, second, Reverse(score), id))
             .collect())
     }
 

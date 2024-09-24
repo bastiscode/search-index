@@ -358,7 +358,7 @@ impl QGramIndex {
     ) -> anyhow::Result<Vec<(usize, Ranking)>> {
         let query = normalize(query);
         if query.is_empty() {
-            return Err(anyhow!("query must not be empty"));
+            return Ok(vec![]);
         }
         let q_grams = Self::compute_q_grams(&query, self.q, self.distance, false);
         let delta = delta.unwrap_or_else(|| q_grams.len() / (self.q + 1));

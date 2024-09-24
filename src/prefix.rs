@@ -255,6 +255,10 @@ impl PrefixIndex {
         Ok(matches)
     }
 
+    pub fn get_type(&self) -> &str {
+        "prefix"
+    }
+
     pub fn get_name(&self, id: usize) -> anyhow::Result<&str> {
         self.data.get_val(id, 0).ok_or_else(|| anyhow!("inalid id"))
     }

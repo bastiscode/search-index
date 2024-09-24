@@ -406,6 +406,10 @@ impl QGramIndex {
             .collect())
     }
 
+    pub fn get_type(&self) -> &str {
+        "qgram"
+    }
+
     pub fn get_name(&self, id: usize) -> anyhow::Result<&str> {
         self.data
             .get_val(id, 0)

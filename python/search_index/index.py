@@ -105,3 +105,11 @@ class SearchIndex:
 
         """
         ...
+
+    def get_type(self) -> str:
+        """
+
+        Returns the type of the index.
+
+        """
+        ...

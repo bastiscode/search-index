@@ -29,6 +29,7 @@ if __name__ == "__main__":
     print(f"Loaded index with {len(idx):,} entries.")
 
     matches = idx.find_matches(args.query)
+    print(f"Found {len(matches):,} matches.")
     for i, (id, key) in enumerate(matches[:5]):
         if i > 0:
             print()

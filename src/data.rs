@@ -59,9 +59,8 @@ impl<'a> Iterator for IndexDataIter<'a> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.data.get_row(self.idx).map(|row| {
+        self.data.get_row(self.idx).inspect(|_| {
             self.idx += 1;
-            row
         })
     }
 }

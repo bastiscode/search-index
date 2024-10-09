@@ -17,6 +17,7 @@ memmap2 = "0"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 any_ascii = "0"
+ordered-float = "4.3"
 
 [profile.release]
 lto = true

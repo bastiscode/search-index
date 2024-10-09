@@ -279,16 +279,14 @@ impl QGramIndex {
             }
         }
         let mut config_file = BufWriter::new(File::create(index_dir.join("index.config"))?);
-        let mut buffer = vec![];
-        let q_bytes = u64::try_from(q)?.to_le_bytes();
-        buffer.extend_from_slice(&q_bytes);
+        let q_bytes = u32::try_from(q)?.to_le_bytes();
+        config_file.write_all(&q_bytes)?;
         let distance_bytes = match distance {
-            Distance::Ped => 0u64,
-            Distance::Ied => 1u64,
+            Distance::Ped => 0u32,
+            Distance::Ied => 1u32,
         }
         .to_le_bytes();
-        buffer.extend_from_slice(&distance_bytes);
-        config_file.write_all(&buffer)?;
+        config_file.write_all(&distance_bytes)?;
         Ok(())
     }
 
@@ -327,12 +325,12 @@ impl QGramIndex {
             name_to_index.push(index);
         }
         let config = unsafe { Mmap::map(&File::open(index_dir.join("index.config"))?)? };
-        let mut q_bytes = [0; U64_SIZE];
-        q_bytes.copy_from_slice(&config[..U64_SIZE]);
-        let q = u64::from_le_bytes(q_bytes) as usize;
-        let mut distance_bytes = [0; U64_SIZE];
-        distance_bytes.copy_from_slice(&config[U64_SIZE..]);
-        let distance = match u64::from_le_bytes(distance_bytes) {
+        let mut q_bytes = [0; U32_SIZE];
+        q_bytes.copy_from_slice(&config[..U32_SIZE]);
+        let q = u32::from_le_bytes(q_bytes) as usize;
+        let mut distance_bytes = [0; U32_SIZE];
+        distance_bytes.copy_from_slice(&config[U32_SIZE..]);
+        let distance = match u32::from_le_bytes(distance_bytes) {
             0 => Distance::Ped,
             1 => Distance::Ied,
             _ => return Err(anyhow!("invalid distance")),

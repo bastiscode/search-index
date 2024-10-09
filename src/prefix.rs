@@ -1,32 +1,40 @@
 use anyhow::anyhow;
 use itertools::Itertools;
 use memmap2::Mmap;
-use pyo3::prelude::*;
+use ordered_float::OrderedFloat;
+use pyo3::{exceptions::PyValueError, prelude::*};
 use std::{
     cmp::{Ordering, Reverse},
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::File,
     io::{BufWriter, Write},
+    iter::once,
     path::Path,
     sync::Arc,
 };
 
+use crate::utils::{bm25, tfidf};
 use crate::{
     data::IndexData,
-    utils::{list_intersection, normalize, IndexIter},
+    utils::{list_intersection, list_merge, normalize, IndexIter},
 };
 
 #[pyclass]
 #[derive(Clone)]
 pub struct PrefixIndex {
+    #[pyo3(get)]
+    score: Score,
     data: Arc<IndexData>,
     index: Arc<Mmap>,
     offsets: Arc<[usize]>,
     num_ids: Arc<[usize]>,
+    name_to_index: Arc<[usize]>,
     sub_index: Option<Arc<[usize]>>,
 }
 
-const SIZE: usize = size_of::<u64>();
+const U64_SIZE: usize = size_of::<u64>();
+const U32_SIZE: usize = size_of::<u32>();
+const F32_SIZE: usize = size_of::<f32>();
 
 impl PrefixIndex {
     #[inline]
@@ -54,20 +62,26 @@ impl PrefixIndex {
     }
 
     #[inline]
-    fn parse_ids(&self, start: usize, end: usize) -> Vec<usize> {
+    fn parse_scores(&self, start: usize, end: usize) -> Vec<(usize, f32)> {
         self.index[start..end]
-            .chunks_exact(SIZE)
+            .chunks_exact(U32_SIZE + F32_SIZE)
             .filter_map(|bytes| {
-                let mut id_bytes = [0; SIZE];
-                id_bytes.copy_from_slice(bytes);
-                let id = u64::from_le_bytes(id_bytes) as usize;
-                self.sub_index.as_ref().map_or(Some(id), |sub_index| {
-                    if sub_index.binary_search(&id).is_ok() {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
+                let mut id_bytes = [0; U32_SIZE];
+                let mut score_bytes = [0; F32_SIZE];
+                id_bytes.copy_from_slice(&bytes[..U32_SIZE]);
+                let id = u32::from_le_bytes(id_bytes) as usize;
+                score_bytes.copy_from_slice(&bytes[U32_SIZE..]);
+                let score = f32::from_le_bytes(score_bytes);
+                self.sub_index
+                    .as_ref()
+                    .map_or(Some((id, score)), |sub_index| {
+                        let idx = self.get_index(id)?;
+                        if sub_index.binary_search(&idx).is_err() {
+                            None
+                        } else {
+                            Some((id, score))
+                        }
+                    })
             })
             .collect()
     }
@@ -81,15 +95,15 @@ impl PrefixIndex {
             .copied()
             .unwrap_or_else(|| self.index.len());
         let num_ids = self.num_ids[index];
-        let end = next_start - num_ids * SIZE;
+        let end = next_start - num_ids * (U32_SIZE + F32_SIZE);
         (&self.index[start..end], (end, next_start))
     }
 
     #[inline]
-    fn get_ids_on_prefix_match(&self, index: usize, prefix: &[u8]) -> Option<Vec<usize>> {
+    fn get_scores_on_prefix_match(&self, index: usize, prefix: &[u8]) -> Option<Vec<(usize, f32)>> {
         let (index_keyword, (start, end)) = self.get_keyword(index);
         if let Ordering::Equal = Self::prefix_cmp(index_keyword, prefix) {
-            Some(self.parse_ids(start, end))
+            Some(self.parse_scores(start, end))
         } else {
             None
         }
@@ -99,7 +113,7 @@ impl PrefixIndex {
         self.offsets.len()
     }
 
-    fn get_prefix_matches(&self, prefix: &str) -> Vec<usize> {
+    fn get_prefix_matches(&self, prefix: &str) -> Vec<(usize, f32)> {
         let mut lower = 0;
         let mut upper = self.size();
         while lower < upper {
@@ -112,38 +126,94 @@ impl PrefixIndex {
                     // find all prefix matches
                     return (0..mid)
                         .rev()
-                        .map(|idx| self.get_ids_on_prefix_match(idx, prefix.as_bytes()))
+                        .map(|idx| self.get_scores_on_prefix_match(idx, prefix.as_bytes()))
                         .take_while(|ids| ids.is_some())
                         .flatten()
-                        .flatten()
-                        .chain(self.parse_ids(start, end))
+                        .chain(once(self.parse_scores(start, end)))
                         .chain(
                             // mid to right
                             (mid + 1..self.size())
-                                .map(|idx| self.get_ids_on_prefix_match(idx, prefix.as_bytes()))
+                                .map(|idx| self.get_scores_on_prefix_match(idx, prefix.as_bytes()))
                                 .take_while(|ids| ids.is_some())
-                                .flatten()
                                 .flatten(),
                         )
-                        .unique()
-                        .collect();
+                        .reduce(|a, b| {
+                            list_merge(&a, &b, |a, b| {
+                                if self.score == Score::Occurrence {
+                                    a.max(b)
+                                } else {
+                                    a + b
+                                }
+                            })
+                        })
+                        .unwrap_or_default();
                 }
             }
         }
         vec![]
     }
+
+    #[inline]
+    fn get_index(&self, name_id: usize) -> Option<usize> {
+        self.name_to_index.get(name_id).copied()
+    }
 }
 
-pub type Ranking = (usize, usize);
+pub type Ranking = (f32, usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Score {
+    Occurrence,
+    Count,
+    TfIdf,
+    BM25,
+}
+
+impl FromPyObject<'_> for Score {
+    fn extract(ob: &PyAny) -> PyResult<Self> {
+        let score = ob.extract::<String>()?;
+        match score.as_str() {
+            "count" | "Count" => Ok(Self::Count),
+            "occurrence" | "Occurrence" => Ok(Self::Occurrence),
+            "tfidf" | "TfIdf" => Ok(Self::TfIdf),
+            "bm25" | "BM25" => Ok(Self::BM25),
+            _ => Err(PyErr::new::<PyValueError, _>("invalid score type")),
+        }
+    }
+}
+
+impl IntoPy<PyObject> for Score {
+    fn into_py(self, py: Python) -> PyObject {
+        match self {
+            Self::Occurrence => "Occurrence",
+            Self::Count => "Count",
+            Self::TfIdf => "TfIdf",
+            Self::BM25 => "BM25",
+        }
+        .into_py(py)
+    }
+}
 
 #[pymethods]
 impl PrefixIndex {
     // implement functions from pyi interface
     #[staticmethod]
-    #[pyo3(signature = (data_file, index_dir, use_synonyms = true))]
-    pub fn build(data_file: &str, index_dir: &str, use_synonyms: bool) -> anyhow::Result<()> {
+    #[pyo3(signature = (data_file, index_dir, score = Score::Occurrence, k = 1.5, b = 0.75, use_synonyms = true))]
+    pub fn build(
+        data_file: &str,
+        index_dir: &str,
+        score: Score,
+        k: f32,
+        b: f32,
+        use_synonyms: bool,
+    ) -> anyhow::Result<()> {
+        let index_dir = Path::new(index_dir);
         let data = IndexData::new(data_file)?;
-        let mut map = HashMap::new();
+        let mut map: HashMap<String, Vec<(u32, f32)>> = HashMap::new();
+        let mut lengths = vec![];
+        let mut name_to_index_file =
+            BufWriter::new(File::create(index_dir.join("index.name-to-index"))?);
+        let mut name_id = 0;
         for (i, row) in data.iter().enumerate() {
             let mut split = row.split('\t');
             let name = normalize(
@@ -151,54 +221,92 @@ impl PrefixIndex {
                     .next()
                     .ok_or_else(|| anyhow!("name not found in row {i}: {row}"))?,
             );
-            let mut keywords: Vec<_> = name
-                .split_whitespace()
-                .map(|keyword| keyword.to_string())
-                .collect();
-            for keyword in name.split_whitespace().filter(|s| !s.is_empty()) {
-                map.entry(keyword.to_string())
-                    .or_insert_with(HashSet::new)
-                    .insert(i);
-            }
+            let mut names = vec![name];
             if use_synonyms {
-                keywords.extend(
+                names.extend(
                     split
                         .nth(1)
                         .ok_or_else(|| anyhow!("synonyms not found in row {i}: {row}"))?
                         .split(";;;")
-                        .map(normalize)
-                        .flat_map(|syn| {
-                            syn.split_whitespace()
-                                .map(|s| s.to_string())
-                                .collect::<Vec<_>>()
-                        }),
+                        .map(normalize),
                 );
             }
-            for keyword in keywords.into_iter().filter(|s| !s.is_empty()) {
-                map.entry(keyword.to_string())
-                    .or_insert_with(HashSet::new)
-                    .insert(i);
+            for name in names {
+                let mut length = 0;
+                for keyword in name.split_whitespace().filter(|s| !s.is_empty()) {
+                    let list = map.entry(keyword.to_string()).or_default();
+                    match list.last_mut() {
+                        Some((last_id, last_freq)) if last_id == &name_id => {
+                            *last_freq += if score == Score::Occurrence { 0.0 } else { 1.0 };
+                        }
+                        _ => {
+                            list.push((name_id, 1.0));
+                        }
+                    }
+                    length += 1;
+                }
+                if name_id == u32::MAX {
+                    return Err(anyhow!("too many names, max {} supported", u32::MAX));
+                }
+                name_id += 1;
+                lengths.push(length);
+                let name_to_index_bytes = u64::try_from(i)?.to_le_bytes();
+                name_to_index_file.write_all(&name_to_index_bytes)?;
             }
         }
-        // write the map to different files on disk so we can load it memory mapped
+
+        let sum_length: u32 = lengths.iter().sum();
+        let avg_length = sum_length as f32 / lengths.len().max(1) as f32; // write the map to different files on disk so we can load it memory mapped
+        let doc_count = u32::try_from(lengths.len())?;
+
+        for items in map.values_mut() {
+            let doc_freq = items.len() as u32;
+            for (id, tf) in items.iter_mut() {
+                match score {
+                    Score::TfIdf => {
+                        // convert tf to u64
+                        let term_freq = tf.round() as u32;
+                        *tf = tfidf(term_freq, doc_freq, doc_count).unwrap_or(0.0);
+                    }
+                    Score::BM25 => {
+                        let term_freq = tf.round() as u32;
+                        let doc_length = lengths[*id as usize];
+                        *tf = bm25(term_freq, doc_freq, doc_count, avg_length, doc_length, k, b)
+                            .unwrap_or(0.0);
+                    }
+                    _ => {}
+                }
+            }
+        }
         // first sort by key to have them in lexicographical order
-        let index_dir = Path::new(index_dir);
         let mut index_file = BufWriter::new(File::create(index_dir.join("index.data"))?);
         let mut offset_file = BufWriter::new(File::create(index_dir.join("index.offsets"))?);
         let mut offset = 0;
-        for (name, ids) in map.into_iter().sorted_by(|(a, _), (b, _)| a.cmp(b)) {
-            index_file.write_all(name.as_bytes())?;
+        for (keyword, ids) in map.into_iter().sorted_by(|(a, _), (b, _)| a.cmp(b)) {
+            index_file.write_all(keyword.as_bytes())?;
             let offset_bytes = u64::try_from(offset)?.to_le_bytes();
             offset_file.write_all(&offset_bytes)?;
-            offset += name.len();
+            offset += keyword.len();
             let num_id_bytes = u64::try_from(ids.len())?.to_le_bytes();
             offset_file.write_all(&num_id_bytes)?;
-            for id in ids {
-                let id_bytes = u64::try_from(id)?.to_le_bytes();
+            for (id, score) in ids {
+                let id_bytes = id.to_le_bytes();
                 index_file.write_all(&id_bytes)?;
                 offset += id_bytes.len();
+                let score_bytes = score.to_le_bytes();
+                index_file.write_all(&score_bytes)?;
+                offset += score_bytes.len();
             }
         }
+        let mut config_file = BufWriter::new(File::create(index_dir.join("index.config"))?);
+        let score_bytes = match score {
+            Score::Occurrence => 0u32,
+            Score::Count => 1u32,
+            Score::TfIdf => 2u32,
+            Score::BM25 => 3u32,
+        }
+        .to_le_bytes();
+        config_file.write_all(&score_bytes)?;
         Ok(())
     }
 
@@ -210,19 +318,39 @@ impl PrefixIndex {
         let mut offsets = vec![];
         let mut num_ids = vec![];
         let offset_bytes = unsafe { Mmap::map(&File::open(index_dir.join("index.offsets"))?)? };
-        for chunk in offset_bytes.chunks_exact(SIZE * 2) {
-            let mut offset = [0; SIZE];
-            let mut num = [0; SIZE];
-            offset.copy_from_slice(&chunk[..SIZE]);
-            num.copy_from_slice(&chunk[SIZE..]);
+        for chunk in offset_bytes.chunks_exact(2 * U64_SIZE) {
+            let mut offset = [0; U64_SIZE];
+            let mut num = [0; U64_SIZE];
+            offset.copy_from_slice(&chunk[..U64_SIZE]);
+            num.copy_from_slice(&chunk[U64_SIZE..]);
             offsets.push(u64::from_le_bytes(offset) as usize);
             num_ids.push(u64::from_le_bytes(num) as usize);
         }
+        let mut name_to_index = vec![];
+        let name_to_index_bytes =
+            unsafe { Mmap::map(&File::open(index_dir.join("index.name-to-index"))?)? };
+        for chunk in name_to_index_bytes.chunks_exact(U64_SIZE) {
+            let mut index = [0; U64_SIZE];
+            index.copy_from_slice(chunk);
+            name_to_index.push(u64::from_le_bytes(index) as usize);
+        }
+        let config = unsafe { Mmap::map(&File::open(index_dir.join("index.config"))?)? };
+        let mut score_bytes = [0; U32_SIZE];
+        score_bytes.copy_from_slice(&config[..U32_SIZE]);
+        let score = match u32::from_le_bytes(score_bytes) {
+            0 => Score::Occurrence,
+            1 => Score::Count,
+            2 => Score::TfIdf,
+            3 => Score::BM25,
+            _ => return Err(anyhow!("invalid score type")),
+        };
         Ok(Self {
             data,
             index,
+            score,
             offsets: offsets.into(),
             num_ids: num_ids.into(),
+            name_to_index: name_to_index.into(),
             sub_index: None,
         })
     }
@@ -234,25 +362,27 @@ impl PrefixIndex {
             .filter(|s| !s.is_empty())
             .unique()
             .fold(HashMap::new(), |mut map, keyword| {
-                for id in self.get_prefix_matches(keyword) {
-                    *map.entry(id).or_insert(0) += 1;
+                for (id, score) in self.get_prefix_matches(keyword) {
+                    *map.entry(id).or_insert(0.0) += score;
                 }
                 map
             });
-        let mut matches: Vec<_> = matches
+        Ok(matches
             .into_iter()
-            .map(|(id, count)| {
-                // add score to sort key
-                let col = self
-                    .data
-                    .get_val(id, 1)
-                    .ok_or_else(|| anyhow!("failed to get score for id {id}"))?;
-                let score = col.parse::<usize>()?;
-                Ok((id, (count, score)))
+            .filter_map(|(name_id, score)| {
+                let index = self.get_index(name_id)?;
+                Some((index, score))
             })
-            .collect::<anyhow::Result<_>>()?;
-        matches.sort_by_key(|&(id, (count, score))| (Reverse(count), Reverse(score), id));
-        Ok(matches)
+            .sorted_by_key(|&(index, score)| (index, Reverse(OrderedFloat(score))))
+            .unique_by(|&(index, ..)| index)
+            .filter_map(|(index, score)| {
+                let id_score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
+                Some((index, (score, id_score)))
+            })
+            .sorted_by_key(|&(id, (score, id_score))| {
+                (Reverse(OrderedFloat(score)), Reverse(id_score), id)
+            })
+            .collect())
     }
 
     pub fn get_type(&self) -> &str {

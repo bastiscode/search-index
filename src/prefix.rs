@@ -119,7 +119,7 @@ impl PrefixIndex {
         while lower < upper {
             let mid = (lower + upper) / 2;
             let (mid_keyword, (start, end)) = self.get_keyword(mid);
-            match Self::prefix_cmp(mid_keyword, keyword.as_bytes()) {
+            match mid_keyword.cmp(keyword.as_bytes()) {
                 Ordering::Less => lower = mid + 1,
                 Ordering::Greater => upper = mid,
                 Ordering::Equal => return self.parse_scores(start, end),

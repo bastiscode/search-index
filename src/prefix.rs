@@ -113,6 +113,21 @@ impl PrefixIndex {
         self.offsets.len()
     }
 
+    fn get_exact_matches(&self, keyword: &str) -> Vec<(usize, f32)> {
+        let mut lower = 0;
+        let mut upper = self.size();
+        while lower < upper {
+            let mid = (lower + upper) / 2;
+            let (mid_keyword, (start, end)) = self.get_keyword(mid);
+            match Self::prefix_cmp(mid_keyword, keyword.as_bytes()) {
+                Ordering::Less => lower = mid + 1,
+                Ordering::Greater => upper = mid,
+                Ordering::Equal => return self.parse_scores(start, end),
+            }
+        }
+        vec![]
+    }
+
     fn get_prefix_matches(&self, prefix: &str) -> Vec<(usize, f32)> {
         let mut lower = 0;
         let mut upper = self.size();
@@ -356,13 +371,17 @@ impl PrefixIndex {
     }
 
     pub fn find_matches(&self, query: &str) -> anyhow::Result<Vec<(usize, Ranking)>> {
-        let norm = normalize(query);
-        let matches = norm
+        let matches = normalize(query)
             .split_whitespace()
             .filter(|s| !s.is_empty())
             .unique()
             .fold(HashMap::new(), |mut map, keyword| {
-                for (id, score) in self.get_prefix_matches(keyword) {
+                let matches = if keyword.len() < 4 {
+                    self.get_exact_matches(keyword)
+                } else {
+                    self.get_prefix_matches(keyword)
+                };
+                for (id, score) in matches {
                     *map.entry(id).or_insert(0.0) += score;
                 }
                 map

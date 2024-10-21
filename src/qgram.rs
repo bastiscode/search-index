@@ -520,6 +520,12 @@ fn ied(infix: &str, string: &str) -> (usize, usize) {
         .min()
         .unwrap_or_default();
     (ied, string.len().saturating_sub(infix.len()) + ied)
+} 
+
+#[pyfunction]
+pub(crate) fn pyied(infix: &str, string: &str) -> (usize, usize) {
+    let (a, b) = ied(infix, string);
+    (a, b)
 }
 
 #[cfg(test)]

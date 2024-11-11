@@ -377,7 +377,7 @@ impl QGramIndex {
                 }
                 let name = self.get_normalized_name(name_id)?;
                 let (dist, aux) = match self.distance {
-                    Distance::Ped => (ped(&query, name, delta), 0),
+                    Distance::Ped => (ped(&query, name, Some(delta)), 0),
                     Distance::Ied => ied(&query, name),
                 };
                 if dist <= delta {
@@ -449,11 +449,14 @@ impl QGramIndex {
 }
 
 #[inline]
-fn ped(prefix: &str, string: &str, delta: usize) -> usize {
+#[pyfunction]
+#[pyo3(signature = (prefix, string, delta = None))]
+pub(crate) fn ped(prefix: &str, string: &str, delta: Option<usize>) -> usize {
     let x: Vec<_> = prefix.chars().collect();
     let y: Vec<_> = string.chars().collect();
     let n = x.len() + 1;
-    let m = (n + delta).min(y.len() + 1);
+    let delta = delta.unwrap_or(usize::MAX);
+    let m = n.saturating_add(delta).min(y.len() + 1);
 
     let mut matrix = vec![0; m * n];
 
@@ -489,7 +492,8 @@ fn ped(prefix: &str, string: &str, delta: usize) -> usize {
 }
 
 #[inline]
-fn ied(infix: &str, string: &str) -> (usize, usize) {
+#[pyfunction]
+pub(crate) fn ied(infix: &str, string: &str) -> (usize, usize) {
     let x: Vec<_> = infix.chars().collect();
     let y: Vec<_> = string.chars().collect();
     let n = x.len() + 1;

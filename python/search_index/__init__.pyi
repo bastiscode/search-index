@@ -1,7 +1,6 @@
 from typing import Any
 from search_index.index import SearchIndex
 
-
 def normalize(s: str) -> str:
     """
 
@@ -10,6 +9,22 @@ def normalize(s: str) -> str:
     """
     pass
 
+def ped(prefix: str, string: str, delta: int | None = None) -> int:
+    """
+
+    Computes the prefix edit distance between the given prefix and string
+    using the given delta.
+
+    """
+    pass
+
+def ied(infix: str, string: str) -> tuple[int, int]:
+    """
+
+    Computes the infix edit distance between the given infix and string.
+
+    """
+    pass
 
 class QGramIndex(SearchIndex):
     """
@@ -43,7 +58,7 @@ class QGramIndex(SearchIndex):
         q: int = 3,
         distance: str = "ied",
         use_synonyms: bool = True,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         """
 
@@ -52,7 +67,6 @@ class QGramIndex(SearchIndex):
 
         """
         pass
-
 
 class PrefixIndex(SearchIndex):
     """
@@ -77,7 +91,7 @@ class PrefixIndex(SearchIndex):
         k: float = 1.75,
         b: float = 0.75,
         use_synonyms: bool = True,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         """
 

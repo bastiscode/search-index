@@ -347,8 +347,10 @@ impl PrefixIndex {
         for chunk in name_to_index_bytes.chunks_exact(U64_SIZE) {
             let mut index = [0; U64_SIZE];
             index.copy_from_slice(chunk);
-            name_to_index.push(u64::from_le_bytes(index) as usize);
+            let index = u64::from_le_bytes(index) as usize;
+            name_to_index.push(index);
         }
+
         let config = unsafe { Mmap::map(&File::open(index_dir.join("index.config"))?)? };
         let mut score_bytes = [0; U32_SIZE];
         score_bytes.copy_from_slice(&config[..U32_SIZE]);
@@ -371,7 +373,7 @@ impl PrefixIndex {
     }
 
     pub fn find_matches(&self, query: &str) -> anyhow::Result<Vec<(usize, Ranking)>> {
-        let matches = normalize(query)
+        Ok(normalize(query)
             .split_whitespace()
             .filter(|s| !s.is_empty())
             .unique()
@@ -385,8 +387,7 @@ impl PrefixIndex {
                     *map.entry(id).or_insert(0.0) += score;
                 }
                 map
-            });
-        Ok(matches
+            })
             .into_iter()
             .filter_map(|(name_id, score)| {
                 let index = self.get_index(name_id)?;

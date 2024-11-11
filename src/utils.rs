@@ -81,11 +81,11 @@ pub(crate) fn list_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
     result
 }
 
-pub(crate) fn list_merge(
-    a: &[(usize, f32)],
-    b: &[(usize, f32)],
-    agg_fn: impl Fn(f32, f32) -> f32,
-) -> Vec<(usize, f32)> {
+pub(crate) fn list_merge<T: Copy>(
+    a: &[(usize, T)],
+    b: &[(usize, T)],
+    agg_fn: impl Fn(T, T) -> T,
+) -> Vec<(usize, T)> {
     // merge two sorted lists of (id, score) pairs
     // into a single sorted list
     // assumes that the input lists are sorted by id and that

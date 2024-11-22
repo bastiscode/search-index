@@ -3,6 +3,7 @@ use core::cmp::Reverse;
 use itertools::Itertools;
 use memmap2::Mmap;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -43,19 +44,23 @@ pub enum Distance {
     Ied,
 }
 
-impl IntoPy<PyObject> for Distance {
-    fn into_py(self, py: Python) -> PyObject {
+impl<'py> IntoPyObject<'py> for Distance {
+    type Target = PyString;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             Distance::Ped => "ped",
             Distance::Ied => "ied",
         }
-        .into_py(py)
+        .into_pyobject(py)
     }
 }
 
 impl FromPyObject<'_> for Distance {
-    fn extract(ob: &PyAny) -> PyResult<Self> {
-        let s = ob.extract::<String>()?;
+    fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let s: String = ob.extract()?;
         match s.as_str() {
             "ped" | "PED" => Ok(Distance::Ped),
             "ied" | "IED" => Ok(Distance::Ied),
@@ -349,6 +354,7 @@ impl QGramIndex {
         })
     }
 
+    #[pyo3(signature = (query, delta = None))]
     pub fn find_matches(
         &self,
         query: &str,
@@ -532,12 +538,12 @@ mod tests {
 
     #[test]
     fn test_ped() {
-        assert_eq!(ped("frei", "frei", 0), 0);
-        assert_eq!(ped("frei", "freiburg", 0), 0);
-        assert_eq!(ped("frei", "breifurg", 4), 1);
-        assert_eq!(ped("freiburg", "stuttgart", 2), 3);
-        assert_eq!(ped("", "freiburg", 10), 0);
-        assert_eq!(ped("", "", 10), 0);
+        assert_eq!(ped("frei", "frei", Some(0)), 0);
+        assert_eq!(ped("frei", "freiburg", Some(0)), 0);
+        assert_eq!(ped("frei", "breifurg", Some(4)), 1);
+        assert_eq!(ped("freiburg", "stuttgart", Some(2)), 3);
+        assert_eq!(ped("", "freiburg", Some(10)), 0);
+        assert_eq!(ped("", "", Some(10)), 0);
     }
 
     #[test]

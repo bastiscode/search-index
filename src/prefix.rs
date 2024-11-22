@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use itertools::Itertools;
 use memmap2::Mmap;
 use ordered_float::OrderedFloat;
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyString};
 use std::{
     cmp::{Ordering, Reverse},
     collections::HashMap,
@@ -185,8 +185,8 @@ pub enum Score {
 }
 
 impl FromPyObject<'_> for Score {
-    fn extract(ob: &PyAny) -> PyResult<Self> {
-        let score = ob.extract::<String>()?;
+    fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let score: String = ob.extract()?;
         match score.as_str() {
             "count" | "Count" => Ok(Self::Count),
             "occurrence" | "Occurrence" => Ok(Self::Occurrence),
@@ -197,15 +197,19 @@ impl FromPyObject<'_> for Score {
     }
 }
 
-impl IntoPy<PyObject> for Score {
-    fn into_py(self, py: Python) -> PyObject {
+impl<'py> IntoPyObject<'py> for Score {
+    type Target = PyString;
+    type Output = Bound<'py, PyString>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             Self::Occurrence => "Occurrence",
             Self::Count => "Count",
             Self::TfIdf => "TfIdf",
             Self::BM25 => "BM25",
         }
-        .into_py(py)
+        .into_pyobject(py)
     }
 }
 

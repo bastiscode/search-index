@@ -1,13 +1,10 @@
 import mmap
-from search_index.index import SearchIndex
+from search_index import SearchIndex
 
 
 class Mapping:
     def __init__(
-        self,
-        search_index: SearchIndex,
-        identifier_column: int,
-        mapping_file: str
+        self, search_index: SearchIndex, identifier_column: int, mapping_file: str
     ) -> None:
         self.search_index = search_index
         self.identifier_column = identifier_column
@@ -16,9 +13,7 @@ class Mapping:
 
     @staticmethod
     def build(
-        search_index: SearchIndex,
-        mapping_file: str,
-        identifier_column: int
+        search_index: SearchIndex, mapping_file: str, identifier_column: int
     ) -> None:
         """
 
@@ -29,8 +24,9 @@ class Mapping:
         map: dict[str, int] = {}
         for i, data in enumerate(search_index):
             split = data.rstrip("\r\n").split("\t")
-            assert len(split) > identifier_column, \
-                f"identifier column not found for index {i}"
+            assert (
+                len(split) > identifier_column
+            ), f"identifier column not found for index {i}"
             identifier = split[identifier_column]
             assert identifier not in map, f"duplicate identifier {identifier}"
             map[identifier] = i
@@ -54,12 +50,9 @@ class Mapping:
         upper = len(self.mapping) // 8
         while lower < upper:
             middle = (lower + upper) // 2
-            bytes = self.mapping[middle * 8: (middle + 1) * 8]
+            bytes = self.mapping[middle * 8 : (middle + 1) * 8]
             index = int.from_bytes(bytes, "little")
-            ident = self.search_index.get_val(
-                index,
-                self.identifier_column
-            )
+            ident = self.search_index.get_val(index, self.identifier_column)
             if ident is None:
                 return None
             elif ident < identifier:

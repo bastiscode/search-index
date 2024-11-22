@@ -19,7 +19,10 @@ classifiers = [
     "Topic :: Utilities"
 ]
 
-dependencies = []
+dependencies = [
+    "torch>=2.0",
+    "sentence-transformers>=3.0",
+]
 
 [project.urls]
 Github = "https://github.com/bastiscode/search-index"

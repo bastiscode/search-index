@@ -18,10 +18,10 @@ class SearchIndex:
         The file should contain one record per line, in the following format:
             name\tscore\tsynonyms\tinfo1\tinfo2\t...
 
-        Synonyms are separated by a semicolon.
+        Synonyms are expected to be separated by three semicolons.
 
         An example line:
-            Albert Einstein\t275\tEinstein;A. Einstein\tGerman physicist\t
+            Albert Einstein\t275\tEinstein;;;A. Einstein\tGerman physicist\t
         """
         ...
 
@@ -34,11 +34,7 @@ class SearchIndex:
         """
         ...
 
-    def find_matches(
-        self,
-        query: str,
-        **kwargs: Any
-    ) -> list[tuple[int, Any]]:
+    def find_matches(self, query: str, **kwargs: Any) -> list[tuple[int, Any]]:
         """
 
         Returns a sorted list of tuples containing IDs
@@ -55,10 +51,7 @@ class SearchIndex:
         """
         ...
 
-    def get_row(
-        self,
-        id: int
-    ) -> str:
+    def get_row(self, id: int) -> str:
         """
 
         Returns the line from the data file for the given ID.
@@ -67,11 +60,7 @@ class SearchIndex:
         """
         ...
 
-    def get_val(
-        self,
-        id: int,
-        col: int
-    ) -> str:
+    def get_val(self, id: int, col: int) -> str:
         """
 
         Returns the column value for the given ID.
@@ -79,10 +68,7 @@ class SearchIndex:
         """
         ...
 
-    def sub_index_by_ids(
-        self,
-        ids: list[int]
-    ) -> "SearchIndex":
+    def sub_index_by_ids(self, ids: list[int]) -> "SearchIndex":
         """
 
         Creates a sub-index contating only the given IDs.

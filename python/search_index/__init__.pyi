@@ -1,5 +1,5 @@
 from typing import Any
-from search_index.index import SearchIndex
+from search_index import SearchIndex
 
 def normalize(s: str) -> str:
     """

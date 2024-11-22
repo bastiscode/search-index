@@ -1,14 +1,23 @@
-use std::fs::File;
+use pyo3::prelude::*;
+use std::{fs::File, sync::Arc};
 
 use anyhow::anyhow;
 use memmap2::Mmap;
 
-pub(crate) struct IndexData {
+struct Inner {
     mmap: Mmap,
     offsets: Vec<usize>,
 }
 
+#[pyclass]
+#[derive(Clone)]
+pub struct IndexData {
+    inner: Arc<Inner>,
+}
+
+#[pymethods]
 impl IndexData {
+    #[new]
     pub fn new(file: &str) -> anyhow::Result<Self> {
         // iterate over the file and store the offest of each line
         let mmap = unsafe { Mmap::map(&File::open(file)?)? };
@@ -26,16 +35,14 @@ impl IndexData {
             offsets.push(offset);
             offset += line.len() + 1;
         }
-        Ok(IndexData { mmap, offsets })
-    }
-
-    pub fn len(&self) -> usize {
-        self.offsets.len()
+        Ok(IndexData {
+            inner: Arc::new(Inner { mmap, offsets }),
+        })
     }
 
     pub fn get_row(&self, idx: usize) -> Option<&str> {
-        let offset = self.offsets.get(idx)?;
-        let line = self.mmap.get(*offset..)?;
+        let offset = self.inner.offsets.get(idx)?;
+        let line = self.inner.mmap.get(*offset..)?;
         let len = line.iter().position(|&b| b == b'\n').unwrap_or(line.len());
         Some(unsafe { std::str::from_utf8_unchecked(&line[..len]) })
     }
@@ -43,6 +50,28 @@ impl IndexData {
     pub fn get_val(&self, idx: usize, column: usize) -> Option<&str> {
         self.get_row(idx)
             .and_then(|line| line.split('\t').nth(column))
+    }
+
+    pub fn __iter__(&self) -> PyIndexDataIter {
+        PyIndexDataIter {
+            inner: self.clone(),
+            idx: 0,
+        }
+    }
+
+    pub fn __getitem__(&self, idx: usize) -> anyhow::Result<&str> {
+        self.get_row(idx)
+            .ok_or_else(|| anyhow!("index out of bounds"))
+    }
+
+    pub fn __len__(&self) -> usize {
+        self.len()
+    }
+}
+
+impl IndexData {
+    pub fn len(&self) -> usize {
+        self.inner.offsets.len()
     }
 
     pub fn iter(&self) -> IndexDataIter {
@@ -62,5 +91,25 @@ impl<'a> Iterator for IndexDataIter<'a> {
         self.data.get_row(self.idx).inspect(|_| {
             self.idx += 1;
         })
+    }
+}
+
+#[pyclass]
+#[pyo3(name = "IndexDataIter")]
+pub struct PyIndexDataIter {
+    inner: IndexData,
+    idx: usize,
+}
+
+#[pymethods]
+impl PyIndexDataIter {
+    pub fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    pub fn __next__(&mut self) -> Option<String> {
+        let res = self.inner.get_row(self.idx).map(|s| s.to_string());
+        self.idx += 1;
+        res
     }
 }

@@ -92,11 +92,16 @@ class EmbeddingModel:
 
 class SimilarityIndex(SearchIndex):
     def __init__(
-        self, model: EmbeddingModel, data: IndexData, index: faiss.Index
+        self,
+        model: EmbeddingModel,
+        data: IndexData,
+        index: faiss.Index,
+        subset: set[int] | None = None,
     ) -> None:
         self.model = model
         self.data = data
         self.index = index
+        self.subset = subset
 
     @staticmethod
     def build(
@@ -108,6 +113,7 @@ class SimilarityIndex(SearchIndex):
         embedding_dim: int | None = None,
         batch_size: int = 32,
         device: str = "cuda",
+        train_on_gpu: bool = False,
         precision: str = "float32",
         show_progress: bool = False,
     ) -> None:
@@ -175,7 +181,7 @@ class SimilarityIndex(SearchIndex):
 
         added_ids = set()
         if "IVF" in index_name:
-            if faiss.get_num_gpus() > 0:
+            if faiss.get_num_gpus() > 0 and train_on_gpu:
                 if show_progress:
                     print(
                         f"Setting up clustering index on {faiss.get_num_gpus()} GPUs "
@@ -219,23 +225,24 @@ class SimilarityIndex(SearchIndex):
             index.add_with_ids(train_embeddings, train_ids)
             added_ids.update(train_ids)
 
-        index_ids = []
-        index_texts = []
-        for id, text in tqdm(
-            data_iter(),
-            desc="Getting index data",
-            total=len(data),
-            disable=not show_progress,
-        ):
-            if id in added_ids:
-                continue
-            index_ids.extend((id for _ in range(len(text))))
-            index_texts.extend(text)
+        if len(added_ids) < len(data):
+            index_ids = []
+            index_texts = []
+            for id, text in tqdm(
+                data_iter(),
+                desc="Getting index data",
+                total=len(data),
+                disable=not show_progress,
+            ):
+                if id in added_ids:
+                    continue
+                index_ids.extend((id for _ in range(len(text))))
+                index_texts.extend(text)
 
-        embeddings = emb_model.embed(
-            index_texts, batch_size=batch_size, show_progress=show_progress
-        )
-        index.add_with_ids(embeddings, index_ids)
+            embeddings = emb_model.embed(
+                index_texts, batch_size=batch_size, show_progress=show_progress
+            )
+            index.add_with_ids(embeddings, index_ids)
 
         os.makedirs(index_dir, exist_ok=True)
         index_file = os.path.join(index_dir, "faiss.index")
@@ -284,10 +291,24 @@ class SimilarityIndex(SearchIndex):
         and ranking key for all matches for the given query.
 
         """
+        if self.subset is not None:
+            selector = faiss.IDSelectorBatch(list(self.subset))
+        else:
+            selector = None
+
+        search_kwargs = {}
+        if isinstance(self.index, faiss.IndexIVF):
+            search_kwargs["params"] = faiss.SearchParametersIVF(
+                sel=selector, nprobe=nprobe
+            )
+        elif isinstance(self.index, faiss.IndexFlat):
+            search_kwargs["params"] = faiss.SearchParameters(sel=selector)
+        elif isinstance(self.index, faiss.IndexBinaryIVF):
+            # does not support search yet, so set nprobe directly
+            self.index.nprobe = nprobe
+
         query_embeddings = self.model.embed([query])
-        if isinstance(self.index, (faiss.IndexIVF, faiss.IndexBinaryIVF)):
-            self.index.nprobe = min(nprobe, self.index.nlist)
-        scores, indices = self.index.search(query_embeddings, k)
+        scores, indices = self.index.search(query_embeddings, k, **search_kwargs)
 
         # deduplicate based on id
         seen = set()
@@ -297,6 +318,7 @@ class SimilarityIndex(SearchIndex):
                 break
             elif index in seen:
                 continue
+
             seen.add(index)
             deduped.append((index, score))
 
@@ -333,7 +355,13 @@ class SimilarityIndex(SearchIndex):
         Creates a sub-index containing only the given IDs.
 
         """
-        return self
+        assert all(0 <= id < len(self) for id in ids), "invalid ID in ID list"
+        if self.subset is not None:
+            subset = self.subset.intersection(ids)
+        else:
+            subset = set(ids)
+
+        return SimilarityIndex(self.model, self.data, self.index, subset)
 
     def __len__(self) -> int:
         """
@@ -341,7 +369,10 @@ class SimilarityIndex(SearchIndex):
         Returns the number of items in the index.
 
         """
-        return len(self.data)
+        if self.subset is not None:
+            return len(self.subset)
+        else:
+            return len(self.data)
 
     def __iter__(self) -> Iterator[str]:
         """
@@ -349,7 +380,11 @@ class SimilarityIndex(SearchIndex):
         Iterates over the index data.
 
         """
-        yield from self.data
+        if self.selector:
+            for id in self.selector.set:
+                yield self.data.get_row(int(id))
+        else:
+            yield from self.data
 
     def get_type(self) -> str:
         """

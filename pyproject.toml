@@ -9,7 +9,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 
-keywords = ["utilities", "index", "q-gram", "prefix", "search"]
+keywords = ["utilities", "index", "q-gram", "prefix", "similarity", "search"]
 
 classifiers = [
     "Programming Language :: Rust",

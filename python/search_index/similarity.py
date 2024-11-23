@@ -276,7 +276,7 @@ class SimilarityIndex(SearchIndex):
         return SimilarityIndex(model, data, index)
 
     def find_matches(
-        self, query: str, k: int = 10, nprobe: int = 16
+        self, query: str, k: int = 10, nprobe: int = 10
     ) -> list[tuple[int, float]]:
         """
 

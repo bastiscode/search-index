@@ -16,6 +16,12 @@ def parse_args():
         choices=["prefix", "qgram", "similarity"],
         help="Index type",
     )
+    parser.add_argument(
+        "--sim-nprobe",
+        type=int,
+        default=10,
+        help="Number of clusters to check for similarity index",
+    )
     parser.add_argument("--bench", action="store_true", help="Run benchmark")
     parser.add_argument(
         "-n", type=int, default=10, help="Number of benchmark iterations"
@@ -33,6 +39,7 @@ if __name__ == "__main__":
         idx = PrefixIndex.load(args.input_file, args.index_dir)
     else:
         idx = SimilarityIndex.load(args.input_file, args.index_dir)
+        kwargs["nprobe"] = args.sim_nprobe
 
     print(f"Loaded index with {len(idx):,} records.")
 

@@ -1,8 +1,6 @@
 import os
-import numpy as np
 import json
 import random
-from itertools import islice
 from typing import Iterator
 
 import faiss
@@ -21,24 +19,17 @@ def select_faiss_index(d: int, n: int) -> tuple[str, faiss.Index]:
     dimensions and datapoints.
 
     """
-    if False and n < 100_000:
+    if n < 1_000_000:
         return "Flat", faiss.IndexIDMap2(
             faiss.index_factory(d, "Flat", faiss.METRIC_INNER_PRODUCT)
         )
 
-    elif n < 1_000_000:
-        n_clusters = round(4 * n**0.5)
-        index = f"IVF{n_clusters},Flat"
-
-    elif n <= 10_000_000:
-        index = "IVF65536_HNSW32,Flat"
-
-    elif n <= 100_000_000:
-        index = "IVF262144_HNSW32,Flat"
-
-    else:
-        index = "IVF1048576_HNSW32,Flat"
-
+    n_clusters = round(4 * n**0.5)
+    index = f"IVF{n_clusters}"
+    if n_clusters >= 2**16:
+        # use HNSW32 instead of flat quantizer for large number of clusters
+        index += "_HNSW32"
+    index += ",Flat"
     return index, faiss.index_factory(d, index, faiss.METRIC_INNER_PRODUCT)
 
 
@@ -48,22 +39,14 @@ def select_faiss_binary_index(d: int, n: int) -> tuple[str, faiss.IndexBinary]:
     Selects the appropriate Faiss binary index for the given number of datapoints.
 
     """
-    if False and n < 100_000:
+    if n < 1_000_000:
         return "BFlat", faiss.IndexBinaryIDMap2(faiss.index_binary_factory(d, "BFlat"))
 
-    elif n < 1_000_000:
-        n_clusters = round(4 * n**0.5)
-        index = f"BIVF{n_clusters}"
-
-    elif n < 10_000_000:
-        index = "BIVF65536_HNSW32"
-
-    elif n < 100_000_000:
-        index = "BIVF262144_HNSW32"
-
-    else:
-        index = "BIVF1048576_HNSW32"
-
+    n_clusters = round(4 * n**0.5)
+    index = f"BIVF{n_clusters}"
+    if n_clusters >= 2**16:
+        # use HNSW32 instead of flat quantizer for large number of clusters
+        index += "_HNSW32"
     return index, faiss.index_binary_factory(d, index)
 
 
@@ -96,12 +79,14 @@ class EmbeddingModel:
         self,
         texts: list[str],
         batch_size: int | None = None,
+        show_progress: bool = False,
     ) -> torch.Tensor:
         return self.encoder.encode(
             texts,
             batch_size=batch_size or len(texts),
             normalize_embeddings=True,
             precision=self.precision,
+            show_progress_bar=show_progress,
         )[:, : self._dim]
 
 
@@ -148,115 +133,109 @@ class SimilarityIndex(SearchIndex):
         emb_model = EmbeddingModel(model, device, precision, embedding_dim)
         data = IndexData(data_file)
 
-        # calculate index size
-        index_size = len(data) * (1 + len(use_columns))
-        # add synonyms to index size
-        # estimate avg. number of synonyms per record
-        # by randomly sampling up to 1000 records
-        if use_synonyms:
-            synonyms = []
-            for idx in random.sample(range(len(data)), min(len(data), 1000)):
-                syns: str = data.get_val(idx, 2)
-                if syns:
-                    synonyms.append(syns.count(";;;") + 1)
-                else:
-                    synonyms.append(0)
-
-            avg_synonyms = sum(synonyms) / max(1, len(synonyms))
-            index_size += round(avg_synonyms * len(data))
-
         def data_iter(
-            desc: str,
-            indices: tuple[Iterator[int], int] | None = None,
-        ) -> tuple[int, str]:
-            if indices is not None:
-                index_iter, total = indices
-            else:
-                index_iter = range(len(data))
-                total = len(data)
+            indices: Iterator[int] | None = None,
+        ) -> tuple[int, list[str]]:
+            if indices is None:
+                indices = range(len(data))
 
-            for i in tqdm(
-                index_iter,
-                total=total,
-                desc=desc,
-                disable=not show_progress,
-                leave=False,
-            ):
+            for i in indices:
                 split = data.get_row(i).split("\t")
-                yield i, normalize(split[0])
+                text = [normalize(split[0])]
 
                 if use_synonyms:
                     for synonym in split[2].split(";;;"):
-                        yield i, normalize(synonym)
+                        if synonym:
+                            text.append(normalize(synonym))
 
                 for col in use_columns:
+                    assert col > 2, (
+                        "column index must be greater than 2, because "
+                        "0, 1, and 2 are reserved for name, score, and synonyms"
+                    )
                     assert col < len(split), f"column {col} out of range"
-                    yield i, normalize(split[col])
+                    if split[col]:
+                        text.append(normalize(split[col]))
+
+                yield i, text
+
+        # calculate index size
+        index_size = sum(len(text) for _, text in data_iter())
 
         if precision == "float32":
             index_name, index = select_faiss_index(emb_model.dim, index_size)
         else:
             index_name, index = select_faiss_binary_index(emb_model.dim, index_size)
 
+        if show_progress:
+            print(
+                f"Building a {index_name} index for {len(data):,} records "
+                f"with a total of {index_size:,} entries"
+            )
+
+        added_ids = set()
         if "IVF" in index_name:
             if faiss.get_num_gpus() > 0:
-                # try moving to GPU, but can fail on older GPUs
-                try:
-                    clustering_index = faiss.index_cpu_to_all_gpus(
-                        faiss.IndexFlat(index.d, faiss.METRIC_INNER_PRODUCT)
+                if show_progress:
+                    print(
+                        f"Setting up clustering index on {faiss.get_num_gpus()} GPUs "
+                        "for training"
                     )
-                    index.clustering_index = clustering_index
-                except Exception:
-                    pass
+                try:
+                    ci = faiss.index_cpu_to_all_gpus(faiss.IndexFlatIP(index.d))
+                    index.clustering_index = ci
+                except Exception as e:
+                    print(f"Failed to move clustering index to GPUs: {e}")
 
+            train_ids = []
             train_texts = []
-            train_embeddings = []
-            cp = index.cp
-            # interpolate number of training samples between mean and max
-            # of clustering parameters
-            num_train_samples = min(
-                index_size, cp.min_points_per_centroid * index.nlist
-            )
-            data_samples = min(len(data), num_train_samples)
-            for id, text in islice(
+            train_size = min(index_size, index.cp.min_points_per_centroid * index.nlist)
+            train_factor = train_size / index_size
+            data_samples = int(train_factor * len(data))
+
+            for id, text in tqdm(
                 data_iter(
-                    "Getting train embeddings",
-                    (
-                        random.sample(range(len(data)), data_samples),
-                        data_samples,
-                    ),
+                    random.sample(range(len(data)), data_samples),
                 ),
-                num_train_samples,
+                desc="Getting train data",
+                total=data_samples,
+                disable=not show_progress,
             ):
-                train_texts.append(text)
-                if len(train_texts) < batch_size:
-                    continue
+                train_ids.extend((id for _ in range(len(text))))
+                train_texts.extend(text)
 
-                train_embeddings.append(emb_model.embed(train_texts))
-                train_texts.clear()
+            train_embeddings = emb_model.embed(
+                train_texts, batch_size=batch_size, show_progress=show_progress
+            )
 
-            if len(train_texts) > 0:
-                train_embeddings.append(emb_model.embed(train_texts))
+            if show_progress:
+                print(
+                    f"Training {index_name} index with {index.nlist:,} clusters on "
+                    f"{len(train_embeddings):,} embeddings from {data_samples:,} records"
+                )
+            index.train(train_embeddings)
 
-            index.train(np.concatenate(train_embeddings))
+            # add train embeddings to index
+            index.add_with_ids(train_embeddings, train_ids)
+            added_ids.update(train_ids)
 
-        ids = []
-        texts = []
-        for id, text in data_iter("Indexing data"):
-            ids.append(id)
-            texts.append(text)
-            if len(ids) < batch_size:
+        index_ids = []
+        index_texts = []
+        for id, text in tqdm(
+            data_iter(),
+            desc="Getting index data",
+            total=len(data),
+            disable=not show_progress,
+        ):
+            if id in added_ids:
                 continue
+            index_ids.extend((id for _ in range(len(text))))
+            index_texts.extend(text)
 
-            embeddings = emb_model.embed(texts)
-            index.add_with_ids(embeddings, ids)
-
-            ids.clear()
-            texts.clear()
-
-        if len(ids) > 0:
-            embeddings = emb_model.embed(texts)
-            index.add_with_ids(embeddings, ids)
+        embeddings = emb_model.embed(
+            index_texts, batch_size=batch_size, show_progress=show_progress
+        )
+        index.add_with_ids(embeddings, index_ids)
 
         os.makedirs(index_dir, exist_ok=True)
         index_file = os.path.join(index_dir, "faiss.index")

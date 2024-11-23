@@ -41,6 +41,13 @@ def parse_args():
         help="Number of dimensions for similarity index",
     )
     parser.add_argument(
+        "--sim-use-columns",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Additional columns to index for similarity index",
+    )
+    parser.add_argument(
         "--sim-batch-size",
         type=int,
         default=64,
@@ -62,5 +69,6 @@ if __name__ == "__main__":
             precision=args.sim_precision,
             batch_size=args.sim_batch_size,
             embedding_dim=args.sim_dimensions,
+            use_columns=args.sim_use_columns,
             show_progress=True,
         )

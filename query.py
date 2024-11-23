@@ -34,7 +34,7 @@ if __name__ == "__main__":
     else:
         idx = SimilarityIndex.load(args.input_file, args.index_dir)
 
-    print(f"Loaded index with {len(idx):,} entries.")
+    print(f"Loaded index with {len(idx):,} records.")
 
     matches = idx.find_matches(args.query, **kwargs)
     print(f"Found {len(matches):,} matches.")

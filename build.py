@@ -14,6 +14,7 @@ def parse_args():
         choices=["prefix", "qgram", "similarity"],
         help="Index type",
     )
+    parser.add_argument("--no-synonyms", action="store_true", help="Disable synonyms")
     parser.add_argument(
         "--prefix-score",
         type=str,
@@ -59,9 +60,16 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     if args.type == "qgram":
-        QGramIndex.build(args.input_file, args.index_dir)
+        QGramIndex.build(
+            args.input_file, args.index_dir, use_synonyms=not args.no_synonyms
+        )
     elif args.type == "prefix":
-        PrefixIndex.build(args.input_file, args.index_dir, score=args.prefix_score)
+        PrefixIndex.build(
+            args.input_file,
+            args.index_dir,
+            score=args.prefix_score,
+            use_synonyms=not args.no_synonyms,
+        )
     else:
         SimilarityIndex.build(
             args.input_file,
@@ -69,6 +77,7 @@ if __name__ == "__main__":
             precision=args.sim_precision,
             batch_size=args.sim_batch_size,
             embedding_dim=args.sim_dimensions,
+            use_synonyms=not args.no_synonyms,
             use_columns=args.sim_use_columns,
             show_progress=True,
         )

@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0"
 rayon = "1.10"
+rand = "0.8"
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310", "anyhow"] }
 itertools = "0.13"
 memmap2 = "0.9"

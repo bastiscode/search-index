@@ -382,12 +382,12 @@ impl QGramIndex {
                     return None;
                 }
                 let name = self.get_normalized_name(name_id)?;
-                let (dist, aux) = match self.distance {
-                    Distance::Ped => (ped(&query, name, Some(delta)), 0),
+                let dist = match self.distance {
+                    Distance::Ped => ped(&query, name, Some(delta)),
                     Distance::Ied => ied(&query, name),
                 };
                 if dist <= delta {
-                    Some((name_id, (dist, aux)))
+                    Some((name_id, (dist, ed(&query, name))))
                 } else {
                     None
                 }
@@ -464,52 +464,18 @@ pub(crate) fn ped(prefix: &str, string: &str, delta: Option<usize>) -> usize {
     let delta = delta.unwrap_or(usize::MAX);
     let m = n.saturating_add(delta).min(y.len() + 1);
 
-    let mut matrix = vec![0; m * n];
+    let mut matrix = vec![0; n * m];
 
-    for row in 0..n {
-        matrix[row * m] = row;
-    }
     matrix
         .iter_mut()
-        .take(m)
+        .step_by(m)
         .enumerate()
-        .for_each(|(i, v)| *v = i);
-
-    for row in 1..n {
-        for col in 1..m {
-            let s = if x[row - 1] == y[col - 1] { 0 } else { 1 };
-
-            let rep_cost = matrix[m * (row - 1) + (col - 1)] + s;
-            let add_cost = matrix[m * row + (col - 1)] + 1;
-            let del_cost = matrix[m * (row - 1) + col] + 1;
-
-            matrix[m * row + col] = rep_cost.min(add_cost).min(del_cost);
-        }
-    }
-
-    let mut delta_min = delta + 1;
-    for col in 0..m {
-        let v = matrix[m * (n - 1) + col];
-        if v < delta_min {
-            delta_min = v;
-        }
-    }
-    delta_min
-}
-
-#[inline]
-#[pyfunction]
-pub(crate) fn ied(infix: &str, string: &str) -> (usize, usize) {
-    let x: Vec<_> = infix.chars().collect();
-    let y: Vec<_> = string.chars().collect();
-    let n = x.len() + 1;
-    let m = y.len() + 1;
-
-    let mut matrix = vec![0; m * n];
-
-    for row in 0..n {
-        matrix[row * m] = row;
-    }
+        .for_each(|(i, val)| {
+            *val = i;
+        });
+    matrix.iter_mut().enumerate().take(m).for_each(|(i, val)| {
+        *val = i;
+    });
 
     for row in 1..n {
         for col in 1..m {
@@ -524,41 +490,181 @@ pub(crate) fn ied(infix: &str, string: &str) -> (usize, usize) {
     }
 
     // find min over last row
-    let ied = matrix[(n - 1) * m..]
+    matrix[m * (n - 1)..]
         .iter()
         .copied()
         .min()
-        .unwrap_or_default();
-    (ied, string.len().saturating_sub(infix.len()) + ied)
+        .unwrap_or_default()
+}
+
+#[inline]
+#[pyfunction]
+pub(crate) fn ied(infix: &str, string: &str) -> usize {
+    let x: Vec<_> = infix.chars().collect();
+    let y: Vec<_> = string.chars().collect();
+    let n = x.len() + 1;
+    let m = y.len() + 1;
+
+    let mut matrix = vec![0; n * m];
+    matrix
+        .iter_mut()
+        .step_by(m)
+        .enumerate()
+        .for_each(|(i, val)| {
+            *val = i;
+        });
+
+    for row in 1..n {
+        for col in 1..m {
+            let s = if x[row - 1] == y[col - 1] { 0 } else { 1 };
+
+            let rep_cost = matrix[m * (row - 1) + (col - 1)] + s;
+            let add_cost = matrix[m * row + (col - 1)] + 1;
+            let del_cost = matrix[m * (row - 1) + col] + 1;
+
+            matrix[m * row + col] = rep_cost.min(add_cost).min(del_cost);
+        }
+    }
+
+    // find min over last row
+    matrix[(n - 1) * m..]
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or_default()
+}
+
+#[inline]
+#[pyfunction]
+pub(crate) fn ed(a: &str, b: &str) -> usize {
+    let x: Vec<_> = a.chars().collect();
+    let y: Vec<_> = b.chars().collect();
+    let n = x.len() + 1;
+    let m = y.len() + 1;
+
+    let mut matrix = vec![0; n * m];
+    matrix
+        .iter_mut()
+        .step_by(m)
+        .enumerate()
+        .for_each(|(i, val)| {
+            *val = i;
+        });
+    matrix.iter_mut().enumerate().take(m).for_each(|(i, val)| {
+        *val = i;
+    });
+
+    for row in 1..n {
+        for col in 1..m {
+            let s = if x[row - 1] == y[col - 1] { 0 } else { 1 };
+
+            let rep_cost = matrix[m * (row - 1) + (col - 1)] + s;
+            let add_cost = matrix[m * row + (col - 1)] + 1;
+            let del_cost = matrix[m * (row - 1) + col] + 1;
+
+            matrix[m * row + col] = rep_cost.min(add_cost).min(del_cost);
+        }
+    }
+
+    matrix[matrix.len() - 1]
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ied, ped};
+    use super::{ed, ied, ped};
+
+    use rand::{distributions::Alphanumeric, Rng};
+
+    fn random_ascii(n: usize) -> String {
+        rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(n)
+            .map(char::from)
+            .collect()
+    }
 
     #[test]
     fn test_ped() {
-        assert_eq!(ped("frei", "frei", Some(0)), 0);
-        assert_eq!(ped("frei", "freiburg", Some(0)), 0);
-        assert_eq!(ped("frei", "breifurg", Some(4)), 1);
-        assert_eq!(ped("freiburg", "stuttgart", Some(2)), 3);
-        assert_eq!(ped("", "freiburg", Some(10)), 0);
-        assert_eq!(ped("", "", Some(10)), 0);
+        assert_eq!(ped("frei", "frei", None), 0);
+        assert_eq!(ped("frei", "freiburg", None), 0);
+        assert_eq!(ped("frie", "freiburg", None), 1);
+        assert_eq!(ped("free", "freiburg", None), 1);
+        assert_eq!(ped("free", "freiberg", None), 1);
+        assert_eq!(ped("bu", "freiburg", None), 2);
+        assert_eq!(ped("freiburg", "frei", None), 4);
+        assert_eq!(ped("frei", "breifurg", None), 1);
+        assert_eq!(ped("freiburg", "stuttgart", None), 7);
+        assert_eq!(ped("", "freiburg", None), 0);
+        assert_eq!(ped("", "", None), 0);
+        for _ in 0..1000 {
+            let p_len = rand::thread_rng().gen_range(0..=20);
+            let prefix = random_ascii(p_len);
+            // random integer
+            let s_len = rand::thread_rng().gen_range(0..=20);
+            let string = random_ascii(s_len);
+            let p_ed = ped(&prefix, &string, None);
+            if p_len > s_len {
+                // for ped, if the prefix is longer than the string, ped is always
+                // equal to ed
+                let ed = ed(&prefix, &string);
+                assert!(p_ed <= ed, "prefix: {}, string: {}", prefix, string);
+            }
+        }
     }
 
     #[test]
     fn test_ied() {
-        assert_eq!(ied("frei", "frei"), (0, 0));
-        assert_eq!(ied("frei", "freiburg"), (0, 4));
-        assert_eq!(ied("frei", "breifurg"), (1, 5));
-        assert_eq!(ied("freiburg", "stuttgart"), (7, 8));
-        assert_eq!(ied("", "freiburg"), (0, 8));
-        assert_eq!(ied("", ""), (0, 0));
-        assert_eq!(ied("cat", "dog"), (3, 3));
-        assert_eq!(ied("cat", "the cat sat on the mat"), (0, 19));
-        assert_eq!(ied("university", "the University of Barcelona"), (1, 18));
-        assert_eq!(ied("einstein", "albert einstein jr."), (0, 11));
-        assert_eq!(ied("university", "uni"), (7, 7));
-        assert_eq!(ied("uriversity", "uni"), (8, 8));
+        assert_eq!(ied("frei", "frei"), 0);
+        assert_eq!(ied("frei", "freiburg"), 0);
+        assert_eq!(ied("frei", "breifurg"), 1);
+        assert_eq!(ied("free", "freiberg"), 1);
+        assert_eq!(ied("freiburg", "stuttgart"), 7);
+        assert_eq!(ied("", "freiburg"), 0);
+        assert_eq!(ied("", ""), 0);
+        assert_eq!(ied("cat", "dog"), 3);
+        assert_eq!(ied("cat", "the cat sat on the mat"), 0);
+        assert_eq!(ied("university", "the University of Barcelona"), 1);
+        assert_eq!(ied("einstein", "albert einstein jr."), 0);
+        assert_eq!(ied("uni", "university"), 0);
+        assert_eq!(ied("university", "uni"), 7);
+        assert_eq!(ied("uriversity", "uni"), 8);
+        for _ in 0..1000 {
+            let i_len = rand::thread_rng().gen_range(0..=20);
+            let infix = random_ascii(i_len);
+            // random integer
+            let s_len = rand::thread_rng().gen_range(0..=20);
+            let string = random_ascii(s_len);
+            let i_ed = ied(&infix, &string);
+            if i_len >= s_len {
+                let ed = ed(&infix, &string);
+                // for ied, if the infix is longer than the string, ied is always
+                // equal to ed
+                assert!(i_ed <= ed);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ed() {
+        assert_eq!(ed("frei", "frei"), 0);
+        assert_eq!(ed("frei", "freiburg"), 4);
+        assert_eq!(ed("frei", "breifurg"), 5);
+        assert_eq!(ed("free", "freiberg"), 4);
+        assert_eq!(ed("freiburg", "stuttgart"), 8);
+        assert_eq!(ed("", "freiburg"), 8);
+        assert_eq!(ed("", ""), 0);
+        assert_eq!(ed("cat", "dog"), 3);
+        assert_eq!(ed("cat", "the cat sat on the mat"), 19);
+        assert_eq!(ed("uni", "university"), 7);
+        for _ in 0..1000 {
+            let a_len = rand::thread_rng().gen_range(0..=20);
+            let a = random_ascii(a_len);
+            // random integer
+            let b_len = rand::thread_rng().gen_range(0..=20);
+            let b = random_ascii(b_len);
+            let a_ed = ed(&a, &b);
+            let b_ed = ed(&b, &a);
+            assert_eq!(a_ed, b_ed);
+        }
     }
 }

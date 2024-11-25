@@ -81,48 +81,6 @@ pub(crate) fn list_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
     result
 }
 
-pub(crate) fn list_merge<T: Copy>(
-    a: &[(usize, T)],
-    b: &[(usize, T)],
-    agg_fn: impl Fn(T, T) -> T,
-) -> Vec<(usize, T)> {
-    // merge two sorted lists of (id, score) pairs
-    // into a single sorted list
-    // assumes that the input lists are sorted by id and that
-    // the ids are unique per list
-    let mut result = vec![];
-    let mut i = 0;
-    let mut j = 0;
-    while i < a.len() && j < b.len() {
-        let (a_id, a_score) = a[i];
-        let (b_id, b_score) = b[j];
-        match a_id.cmp(&b_id) {
-            Ordering::Less => {
-                result.push((a_id, a_score));
-                i += 1;
-            }
-            Ordering::Greater => {
-                result.push((b_id, b_score));
-                j += 1;
-            }
-            Ordering::Equal => {
-                result.push((a_id, agg_fn(a_score, b_score)));
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    while i < a.len() {
-        result.push(a[i]);
-        i += 1;
-    }
-    while j < b.len() {
-        result.push(b[j]);
-        j += 1;
-    }
-    result
-}
-
 fn idf(doc_freq: u32, doc_count: u32) -> Option<f32> {
     if doc_count == 0 || doc_freq == 0 {
         return None;

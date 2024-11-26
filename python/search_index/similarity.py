@@ -108,13 +108,13 @@ class SimilarityIndex(SearchIndex):
         data_file: str,
         index_dir: str,
         use_synonyms: bool = True,
-        use_columns: tuple[int, ...] = (),
+        use_columns: tuple[int, ...] | None = None,
         model: str | None = None,
         embedding_dim: int | None = None,
         batch_size: int = 32,
         device: str = "cuda",
         train_on_gpu: bool = False,
-        precision: str = "float32",
+        precision: str | None = None,
         show_progress: bool = False,
     ) -> None:
         """
@@ -130,13 +130,6 @@ class SimilarityIndex(SearchIndex):
         An example line:
             Albert Einstein\t275\tEinstein;;;A. Einstein\tGerman physicist\t
         """
-        if model is None:
-            if embedding_dim is None:
-                model = "mixedbread-ai/mxbai-embed-large-v1"
-            else:
-                model = "mixedbread-ai/mxbai-embed-2d-large-v1"
-
-        emb_model = EmbeddingModel(model, device, precision, embedding_dim)
         data = IndexData(data_file)
 
         def data_iter(
@@ -154,6 +147,10 @@ class SimilarityIndex(SearchIndex):
                         if synonym:
                             text.append(normalize(synonym))
 
+                if not use_columns:
+                    yield i, text
+                    continue
+
                 for col in use_columns:
                     assert col > 2, (
                         "column index must be greater than 2, because "
@@ -167,6 +164,19 @@ class SimilarityIndex(SearchIndex):
 
         # calculate index size
         index_size = sum(len(text) for _, text in data_iter())
+
+        # set some sensible defaults
+        if precision is None:
+            # set precision based on index size
+            precision = "float32" if index_size < 1_000_000 else "ubinary"
+
+        if model is None:
+            if embedding_dim is None:
+                model = "mixedbread-ai/mxbai-embed-large-v1"
+            else:
+                model = "mixedbread-ai/mxbai-embed-2d-large-v1"
+
+        emb_model = EmbeddingModel(model, device, precision, embedding_dim)
 
         if precision == "float32":
             index_name, index = select_faiss_index(emb_model.dim, index_size)
@@ -195,7 +205,9 @@ class SimilarityIndex(SearchIndex):
 
             train_ids = []
             train_texts = []
-            train_size = min(index_size, index.cp.min_points_per_centroid * index.nlist)
+            train_size = min(
+                index_size, round(1.1 * index.cp.min_points_per_centroid * index.nlist)
+            )
             train_factor = train_size / index_size
             data_samples = int(train_factor * len(data))
 
@@ -380,9 +392,9 @@ class SimilarityIndex(SearchIndex):
         Iterates over the index data.
 
         """
-        if self.selector:
-            for id in self.selector.set:
-                yield self.data.get_row(int(id))
+        if self.subset is not None:
+            for id in sorted(self.subset):
+                yield self.data.get_row(id)
         else:
             yield from self.data
 

@@ -1,12 +1,12 @@
-import os
 import json
+import os
 import random
 from typing import Iterator
 
 import faiss
-import torch
+import numpy as np
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
 from search_index import SearchIndex, normalize
 from search_index._internal import IndexData
@@ -80,14 +80,39 @@ class EmbeddingModel:
         texts: list[str],
         batch_size: int | None = None,
         show_progress: bool = False,
-    ) -> torch.Tensor:
-        return self.encoder.encode(
-            texts,
-            batch_size=batch_size or len(texts),
-            normalize_embeddings=True,
-            precision=self.precision,
-            show_progress_bar=show_progress,
-        )[:, : self._dim]
+    ) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self._dim))
+        if batch_size is None:
+            batch_size = len(texts)
+        # sort texts by length to minimize padding
+        indices = np.argsort([-len(text) for text in texts])
+        sorted_texts = [texts[i] for i in indices]
+        full_embeddings = []
+        # doing our own loop here because sentence transformers
+        # only converts to target precision at the end, which
+        # might OOM for large datasets
+        for i in trange(
+            0,
+            len(sorted_texts),
+            batch_size,
+            desc="Calculating embeddings",
+            disable=not show_progress,
+        ):
+            batch = sorted_texts[i : i + batch_size]
+            embeddings = self.encoder.encode(
+                batch,
+                normalize_embeddings=True,
+                batch_size=len(batch),
+                precision=self.precision,
+            )[:, : self._dim]
+            full_embeddings.extend(embeddings)
+
+        embeddings = np.vstack(full_embeddings)
+        inv_indices = np.argsort(indices)
+        # make sure inv indices correctly restores the original order
+        assert all(t == sorted_texts[i] for t, i in zip(texts, inv_indices))
+        return embeddings[inv_indices]
 
 
 class SimilarityIndex(SearchIndex):
@@ -303,6 +328,13 @@ class SimilarityIndex(SearchIndex):
         and ranking key for all matches for the given query.
 
         """
+        # we want to scale k because we might have ids in the top k 
+        # results that point to the same data point, in which case
+        # we get less than k unique results; this is an approximation
+        # to scale k based on the number of indexed vectors per data point * 2
+        k_factor = self.index.ntotal / max(1, len(self.data))
+        k_scaled = round(k * k_factor)
+
         if self.subset is not None:
             selector = faiss.IDSelectorBatch(list(self.subset))
         else:
@@ -320,7 +352,7 @@ class SimilarityIndex(SearchIndex):
             self.index.nprobe = nprobe
 
         query_embeddings = self.model.embed([query])
-        scores, indices = self.index.search(query_embeddings, k, **search_kwargs)
+        scores, indices = self.index.search(query_embeddings, k_scaled, **search_kwargs)
 
         # deduplicate based on id
         seen = set()
@@ -330,6 +362,8 @@ class SimilarityIndex(SearchIndex):
                 break
             elif index in seen:
                 continue
+            elif len(deduped) >= k:
+                break
 
             seen.add(index)
             deduped.append((index, score))

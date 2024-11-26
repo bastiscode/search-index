@@ -16,6 +16,19 @@ def parse_args():
     )
     parser.add_argument("--no-synonyms", action="store_true", help="Disable synonyms")
     parser.add_argument(
+        "--qgram-q",
+        type=int,
+        default=3,
+        help="Q in q-grams for q-gram index",
+    )
+    parser.add_argument(
+        "--qgram-distance",
+        type=str,
+        choices=["ied", "ped"],
+        default="ied",
+        help="Distance function for q-gram index",
+    )
+    parser.add_argument(
         "--prefix-score",
         type=str,
         choices=["occurrence", "bm25", "tfidf", "count"],
@@ -61,7 +74,11 @@ if __name__ == "__main__":
     args = parse_args()
     if args.type == "qgram":
         QGramIndex.build(
-            args.input_file, args.index_dir, use_synonyms=not args.no_synonyms
+            args.input_file,
+            args.index_dir,
+            q=args.qgram_q,
+            distance=args.qgram_distance,
+            use_synonyms=not args.no_synonyms,
         )
     elif args.type == "prefix":
         PrefixIndex.build(
@@ -76,6 +93,7 @@ if __name__ == "__main__":
             args.index_dir,
             precision=args.sim_precision,
             batch_size=args.sim_batch_size,
+            model=args.sim_model,
             embedding_dim=args.sim_dimensions,
             use_synonyms=not args.no_synonyms,
             use_columns=args.sim_use_columns,

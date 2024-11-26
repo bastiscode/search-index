@@ -573,9 +573,11 @@ impl PrefixIndex {
                 let index = self.get_index(id)?;
                 let id_score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
                 let ranking = match score {
-                    ScoreData::Int(score) => {
-                        Ranking::ByFrequency(score, self.lengths[id as usize] - score, id_score)
-                    }
+                    ScoreData::Int(score) => Ranking::ByFrequency(
+                        score,
+                        self.lengths[id as usize].saturating_sub(score),
+                        id_score,
+                    ),
                     ScoreData::Float(score) => Ranking::ByScore(score, id_score),
                 };
                 Some((index, ranking))

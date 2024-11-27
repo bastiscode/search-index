@@ -279,10 +279,10 @@ impl<'py> IntoPyObject<'py> for Score {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Self::Occurrence => "Occurrence",
-            Self::Count => "Count",
-            Self::TfIdf => "TfIdf",
-            Self::BM25 => "BM25",
+            Self::Occurrence => "occurrence",
+            Self::Count => "count",
+            Self::TfIdf => "tfidf",
+            Self::BM25 => "bm25",
         }
         .into_pyobject(py)
     }

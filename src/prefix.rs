@@ -23,7 +23,7 @@ use crate::{
     utils::{list_intersection, normalize, IndexIter},
 };
 
-const MIN_KEYWORD_LEN: usize = 2;
+const MIN_KEYWORD_LEN: usize = 3;
 // should be larger or equal to MIN_KEYWORD_LEN
 const MIN_PREFIX_MATCHES_LEN: usize = 3;
 
@@ -627,5 +627,10 @@ impl PrefixIndex {
 
     pub fn __iter__(&self) -> IndexIter {
         IndexIter::new(self.data.clone(), self.sub_index.clone())
+    }
+
+    #[getter]
+    pub fn min_keyword_length(&self) -> usize {
+        MIN_KEYWORD_LEN
     }
 }

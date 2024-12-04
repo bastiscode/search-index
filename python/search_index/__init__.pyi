@@ -83,6 +83,16 @@ class PrefixIndex(SearchIndex):
         """
         pass
 
+    @property
+    def min_keyword_length(self) -> int:
+        """
+
+        The minimum keyword length, all keywords shorter than this
+        are ignored.
+
+        """
+        pass
+
     @staticmethod
     def build(
         data_file: str,

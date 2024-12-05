@@ -11,9 +11,9 @@ use utils::normalize;
 
 #[pymodule]
 fn _internal(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let _ = m.add_class::<QGramIndex>();
-    let _ = m.add_class::<PrefixIndex>();
-    let _ = m.add_class::<IndexData>();
+    m.add_class::<QGramIndex>()?;
+    m.add_class::<PrefixIndex>()?;
+    m.add_class::<IndexData>()?;
     m.add_function(wrap_pyfunction!(normalize, m)?)?;
     m.add_function(wrap_pyfunction!(ied, m)?)?;
     m.add_function(wrap_pyfunction!(ped, m)?)?;

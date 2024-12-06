@@ -30,7 +30,7 @@ pub struct QGramIndex {
     qgram_list_lengths: Arc<[usize]>,
     names: Arc<Mmap>,
     name_offsets: Arc<[usize]>,
-    name_to_index: Arc<[usize]>,
+    id_to_index: Arc<[usize]>,
     sub_index: Option<Arc<[usize]>>,
 }
 
@@ -178,23 +178,23 @@ impl QGramIndex {
             })
     }
 
-    fn get_normalized_name(&self, name_id: usize) -> Option<&str> {
-        let start = self.name_offsets.get(name_id).copied()?;
+    fn get_normalized_name(&self, id: usize) -> Option<&str> {
+        let start = self.name_offsets.get(id).copied()?;
         let end = self
             .name_offsets
-            .get(name_id + 1)
+            .get(id + 1)
             .copied()
             .unwrap_or_else(|| self.names.len());
         std::str::from_utf8(&self.names[start..end]).ok()
     }
 
     #[inline]
-    fn get_index(&self, name_id: usize) -> Option<usize> {
-        self.name_to_index.get(name_id).copied()
+    fn get_index(&self, id: usize) -> Option<usize> {
+        self.id_to_index.get(id).copied()
     }
 }
 
-pub type Ranking = (usize, usize, usize);
+pub type Ranking = (usize, usize);
 
 #[pymethods]
 impl QGramIndex {
@@ -216,7 +216,7 @@ impl QGramIndex {
             BufWriter::new(File::create(index_dir.join("index.name-offsets"))?);
 
         let mut name_offset = 0;
-        let mut name_id = 0;
+        let mut id = 0;
         for (i, row) in data.iter().enumerate() {
             let mut split = row.split("\t");
             let name = normalize(
@@ -234,29 +234,29 @@ impl QGramIndex {
                         .map(normalize),
                 );
             }
+            let id_to_index_bytes = u64::try_from(i)?.to_le_bytes();
             for name in names.into_iter().filter(|s| !s.is_empty()) {
                 let q_grams = Self::compute_q_grams(&name, q, distance, true);
                 for qgram in q_grams {
                     let list = inverted_lists.entry(qgram).or_default();
                     match list.last_mut() {
-                        Some((last_id, last_freq)) if last_id == &name_id => {
+                        Some((last_id, last_freq)) if last_id == &id => {
                             *last_freq = last_freq.saturating_add(1);
                         }
                         _ => {
-                            list.push((name_id, 1));
+                            list.push((id, 1));
                         }
                     }
                 }
-                if name_id == u32::MAX {
+                if id == u32::MAX {
                     return Err(anyhow!("too many names, max {} supported", u32::MAX));
                 }
-                name_id += 1;
+                id += 1;
                 name_file.write_all(name.as_bytes())?;
                 let name_offset_bytes = u64::try_from(name_offset)?.to_le_bytes();
                 name_offset_file.write_all(&name_offset_bytes)?;
                 name_offset += name.len();
-                let name_to_index_bytes = u64::try_from(i)?.to_le_bytes();
-                name_offset_file.write_all(&name_to_index_bytes)?;
+                name_offset_file.write_all(&id_to_index_bytes)?;
             }
         }
 
@@ -350,7 +350,7 @@ impl QGramIndex {
             qgram_list_lengths: qgram_list_lengths.into(),
             names,
             name_offsets: name_offsets.into(),
-            name_to_index: name_to_index.into(),
+            id_to_index: name_to_index.into(),
             sub_index: None,
         })
     }
@@ -397,17 +397,13 @@ impl QGramIndex {
 
         Ok(matches
             .into_iter()
-            .filter_map(|(name_id, dist)| {
-                let index = self.get_index(name_id)?;
+            .filter_map(|(id, dist)| {
+                let index = self.get_index(id)?;
                 Some((index, dist))
             })
             .sorted()
             .unique_by(|&(index, ..)| index)
-            .filter_map(|(index, (first, second))| {
-                let score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
-                Some((index, (first, second, score)))
-            })
-            .sorted_by_key(|&(id, (first, second, score))| (first, second, Reverse(score), id))
+            .sorted_by_key(|&(index, (first, second))| (first, second, index))
             .collect())
     }
 

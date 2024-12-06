@@ -495,9 +495,9 @@ impl PrefixIndex {
                 Some((index, score))
                 // sort this list by query_id, keyword_id, is_exact
             })
-            .sorted_by_key(|&(index, ranking)| (index, Reverse(OrderedFloat(ranking))))
+            .sorted_by_key(|&(index, score)| (index, Reverse(OrderedFloat(score))))
             .unique_by(|&(index, ..)| index)
-            .sorted_by_key(|&(.., ranking)| Reverse(OrderedFloat(ranking)))
+            .sorted_by_key(|&(index, score)| (Reverse(OrderedFloat(score)), index))
             .collect())
     }
 

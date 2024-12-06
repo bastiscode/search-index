@@ -23,7 +23,8 @@ pub struct QGramIndex {
     q: usize,
     #[pyo3(get)]
     distance: Distance,
-    data: Arc<IndexData>,
+    #[pyo3(get)]
+    data: IndexData,
     qgrams: Arc<Mmap>,
     qgram_offsets: Arc<[usize]>,
     qgram_list_lengths: Arc<[usize]>,
@@ -297,7 +298,7 @@ impl QGramIndex {
 
     #[staticmethod]
     pub fn load(data_file: &str, index_dir: &str) -> anyhow::Result<Self> {
-        let data = Arc::new(IndexData::new(data_file)?);
+        let data = IndexData::new(data_file)?;
         let index_dir = Path::new(index_dir);
         let qgrams = Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.qgrams"))?)? });
         let mut qgram_offsets = vec![];

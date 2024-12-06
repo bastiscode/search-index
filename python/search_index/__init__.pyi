@@ -1,4 +1,5 @@
-from typing import Any
+from typing import Any, Iterator
+
 from search_index import SearchIndex
 
 def normalize(s: str) -> str:
@@ -25,6 +26,82 @@ def ied(infix: str, string: str) -> tuple[int, int]:
 
     """
     pass
+
+class IndexData:
+    """
+
+    Data for a search index.
+
+    """
+    def __init__(self, file: str) -> None:
+        """
+
+        Initializes the data from the given file.
+
+        """
+        pass
+
+    def __len__(self) -> int:
+        """
+
+        Returns the number of rows in the data.
+
+        """
+        pass
+
+    def __getitem__(self, key: int) -> str:
+        """
+
+        Returns the row at the given index.
+
+        """
+        pass
+
+    def __iter__(self) -> Iterator[str]:
+        """
+
+        Returns an iterator over the rows.
+
+        """
+        pass
+
+    def get_row(self, idx: int) -> str | None:
+        """
+
+        Returns the row at the given index.
+
+        """
+        pass
+
+    def get_val(self, idx: int, column: int) -> str | None:
+        """
+
+        Returns the value at the given index and column.
+
+        """
+        pass
+
+class Mapping:
+    """
+
+    A mapping from a identifier column of index data to its index.
+
+    """
+    def __init__(self, data: IndexData, identifier_column: int) -> None:
+        """
+
+        Initializes the mapping from the given data and identifier column.
+
+        """
+        pass
+
+    def get(self, identifier: str) -> int | None:
+        """
+
+        Returns the index for the given identifier.
+
+        """
+        pass
 
 class QGramIndex(SearchIndex):
     """

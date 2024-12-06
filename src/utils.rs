@@ -7,13 +7,13 @@ use crate::data::IndexData;
 
 #[pyclass]
 pub struct IndexIter {
-    data: Arc<IndexData>,
+    data: IndexData,
     sub_index: Option<Arc<[usize]>>,
     index: usize,
 }
 
 impl IndexIter {
-    pub(crate) fn new(data: Arc<IndexData>, sub_index: Option<Arc<[usize]>>) -> Self {
+    pub(crate) fn new(data: IndexData, sub_index: Option<Arc<[usize]>>) -> Self {
         Self {
             data,
             sub_index,
@@ -120,9 +120,98 @@ pub(crate) fn bm25(
     Some(tf_star * idf)
 }
 
+pub(crate) fn lower_bound(
+    mut start: usize,
+    mut end: usize,
+    cmp: impl Fn(usize) -> Ordering,
+) -> Option<(usize, bool)> {
+    let mut answer = None;
+
+    while start < end {
+        let mid = (start + end) / 2;
+        match cmp(mid) {
+            Ordering::Less => {
+                start = mid + 1;
+            }
+            ord @ (Ordering::Equal | Ordering::Greater) => {
+                answer = Some((mid, ord == Ordering::Equal));
+                end = mid;
+            }
+        }
+    }
+    answer
+}
+
+pub(crate) fn upper_bound(
+    mut start: usize,
+    mut end: usize,
+    cmp: impl Fn(usize) -> Ordering,
+) -> Option<usize> {
+    let mut answer = None;
+
+    while start < end {
+        let mid = (start + end) / 2;
+        match cmp(mid) {
+            Ordering::Less | Ordering::Equal => {
+                start = mid + 1;
+            }
+            Ordering::Greater => {
+                answer = Some(mid);
+                end = mid;
+            }
+        }
+    }
+    answer
+}
+
 #[cfg(test)]
 mod test {
-    use super::{bm25, tfidf};
+    use super::{bm25, lower_bound, tfidf, upper_bound};
+
+    #[test]
+    fn test_bounds() {
+        let values = vec![1, 1, 2, 3, 3, 5, 8, 8, 9];
+        assert_eq!(
+            lower_bound(0, values.len(), |i| values[i].cmp(&3)),
+            Some((3, true))
+        );
+        assert_eq!(
+            lower_bound(0, values.len(), |i| values[i].cmp(&4)),
+            Some((5, false))
+        );
+        assert_eq!(
+            lower_bound(0, values.len(), |i| values[i].cmp(&0)),
+            Some((0, false))
+        );
+        assert_eq!(lower_bound(0, values.len(), |i| values[i].cmp(&10)), None);
+        assert_eq!(
+            lower_bound(0, values.len(), |i| values[i].cmp(&8)),
+            Some((6, true))
+        );
+
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&3)), Some(5));
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&4)), Some(5));
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&10)), None);
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&8)), Some(8));
+
+        let values: Vec<i32> = vec![];
+        assert_eq!(lower_bound(0, values.len(), |i| values[i].cmp(&3)), None);
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&3)), None);
+
+        let values = vec![2, 2];
+        assert_eq!(
+            lower_bound(0, values.len(), |i| values[i].cmp(&2)),
+            Some((0, true))
+        );
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&2)), None);
+
+        let values = vec![1, 2, 2, 4];
+        assert_eq!(
+            lower_bound(0, values.len(), |i| values[i].cmp(&2)),
+            Some((1, true))
+        );
+        assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&2)), Some(3));
+    }
 
     #[test]
     fn test_tfidf() {

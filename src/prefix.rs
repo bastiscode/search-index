@@ -462,33 +462,37 @@ impl PrefixIndex {
                 // let id_score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
                 let score = match self.score {
                     Score::Occurrence => {
-                        // count number of
-                        let num_query_matched = matches
+                        let num_keywords_matched = matches
                             .iter()
                             .unique_by(|Match { keyword_id, .. }| keyword_id)
                             .count();
-                        let num_query_unmatched = num_keywords - num_query_matched;
+                        let num_keywords_unmatched = num_keywords - num_keywords_matched;
 
-                        let mut num_exact_matches = 0;
-                        let mut num_prefix_matches = 0;
-                        // bring exact matches to front and then make them unique
-                        // by word_id
+                        let num_words_matched: u32 = matches
+                            .iter()
+                            .unique_by(|Match { word_id, .. }| word_id)
+                            .map(|Match { freq, .. }| freq)
+                            .sum();
+                        let num_words_unmatched = self.lengths[id] - num_words_matched;
+
+                        let mut num_keyword_exact_matches = 0;
+                        let mut num_keyword_prefix_matches = 0;
                         for m in matches
                             .iter()
                             .sorted_by_key(|Match { exact, .. }| !exact)
-                            .unique_by(|Match { word_id, .. }| word_id)
+                            .unique_by(|Match { keyword_id, .. }| keyword_id)
                         {
                             if m.exact {
-                                num_exact_matches += m.freq;
+                                num_keyword_exact_matches += 1;
                             } else {
-                                num_prefix_matches += m.freq;
+                                num_keyword_prefix_matches += 1;
                             }
                         }
-                        let num_item_unmatched =
-                            self.lengths[id] - num_exact_matches - num_prefix_matches;
-                        1.0 * num_exact_matches as f32 + 0.75 * num_prefix_matches as f32
-                            - 0.5 * num_query_unmatched as f32
-                            - 0.25 * num_item_unmatched as f32
+
+                        1.0 * num_keyword_exact_matches as f32
+                            + 0.75 * num_keyword_prefix_matches as f32
+                            - 0.5 * num_keywords_unmatched as f32
+                            - 0.25 * num_words_unmatched as f32
                     }
                     _ => !unimplemented!(),
                 };

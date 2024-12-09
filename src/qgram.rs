@@ -1,5 +1,4 @@
 use anyhow::anyhow;
-use core::cmp::Reverse;
 use itertools::Itertools;
 use memmap2::Mmap;
 use pyo3::prelude::*;

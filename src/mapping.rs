@@ -63,7 +63,7 @@ impl Mapping {
                 .ok_or_else(|| anyhow!("mapping does not contain identifier column"))?,
         );
         let identifier_column = u64::from_le_bytes(identifier_bytes) as usize;
-        while let Some(index_bytes) = chunks.next() {
+        for index_bytes in chunks {
             let index = u64::from_le_bytes(
                 index_bytes
                     .try_into()

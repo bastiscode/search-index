@@ -17,6 +17,13 @@ def parse_args():
         help="Index type",
     )
     parser.add_argument(
+        "--prefix-score",
+        type=str,
+        choices=["occurrence", "bm25", "tfidf", "count"],
+        default="occurrence",
+        help="Scoring function for prefix index",
+    )
+    parser.add_argument(
         "--sim-nprobe",
         type=int,
         default=10,
@@ -37,6 +44,7 @@ if __name__ == "__main__":
         idx = QGramIndex.load(args.input_file, args.index_dir)
     elif args.type == "prefix":
         idx = PrefixIndex.load(args.input_file, args.index_dir)
+        kwargs["score"] = args.prefix_score
     else:
         idx = SimilarityIndex.load(args.input_file, args.index_dir)
         kwargs["nprobe"] = args.sim_nprobe

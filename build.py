@@ -29,13 +29,6 @@ def parse_args():
         help="Distance function for q-gram index",
     )
     parser.add_argument(
-        "--prefix-score",
-        type=str,
-        choices=["occurrence", "bm25", "tfidf", "count"],
-        default="occurrence",
-        help="Scoring function for prefix index",
-    )
-    parser.add_argument(
         "--sim-model",
         type=str,
         default=None,
@@ -84,7 +77,6 @@ if __name__ == "__main__":
         PrefixIndex.build(
             args.input_file,
             args.index_dir,
-            score=args.prefix_score,
             use_synonyms=not args.no_synonyms,
         )
     else:

@@ -26,28 +26,30 @@ const MIN_PREFIX_MATCHES_LEN: usize = 3;
 #[derive(Clone)]
 pub struct PrefixIndex {
     #[pyo3(get)]
-    score: Score,
-    #[pyo3(get)]
     data: IndexData,
     index: Arc<Mmap>,
     offsets: Arc<[usize]>,
     lengths: Arc<[u32]>,
-    num_ids: Arc<[usize]>,
+    avg_length: f32,
+    list_lengths: Arc<[usize]>,
     id_to_index: Arc<[usize]>,
     sub_index: Option<Arc<[usize]>>,
 }
 
+#[derive(Debug)]
 struct ItemMatch {
     id: usize,
     freq: u32,
     score: f32,
 }
 
+#[derive(Debug)]
 struct WordItemMatches {
     word_id: usize,
     matches: Vec<ItemMatch>,
 }
 
+#[derive(Debug)]
 struct Match {
     keyword_id: usize,
     word_id: usize,
@@ -58,8 +60,6 @@ struct Match {
 
 const U64_SIZE: usize = size_of::<u64>();
 const U32_SIZE: usize = size_of::<u32>();
-const F32_SIZE: usize = size_of::<f32>();
-const CHUNK_SIZE: usize = U32_SIZE + U32_SIZE + F32_SIZE;
 
 impl PrefixIndex {
     #[inline]
@@ -87,16 +87,19 @@ impl PrefixIndex {
     }
 
     #[inline]
-    fn parse_matches(&self, word_id: usize) -> Vec<ItemMatch> {
+    fn parse_matches(&self, word_id: usize, score: Score) -> Vec<ItemMatch> {
         let end = self
             .offsets
             .get(word_id + 1)
             .copied()
             .unwrap_or_else(|| self.index.len());
-        let num_ids = self.num_ids[word_id];
-        let start = end - num_ids * CHUNK_SIZE;
-        self.index[start..end]
-            .chunks_exact(CHUNK_SIZE)
+        let list_length = self.list_lengths[word_id];
+        let start = end - list_length * U32_SIZE;
+
+        let mut doc_freq = 0;
+        let mut last_id = None;
+        let inv_list: Vec<_> = self.index[start..end]
+            .chunks_exact(U32_SIZE)
             .filter_map(|bytes| {
                 let mut id_bytes = [0; U32_SIZE];
                 id_bytes.copy_from_slice(&bytes[..U32_SIZE]);
@@ -107,15 +110,49 @@ impl PrefixIndex {
                         return None;
                     }
                 }
-                let mut freq_bytes = [0; U32_SIZE];
-                freq_bytes.copy_from_slice(&bytes[U32_SIZE..2 * U32_SIZE]);
-                let freq = u32::from_le_bytes(freq_bytes);
-                let mut score_bytes = [0; F32_SIZE];
-                score_bytes.copy_from_slice(&bytes[2 * U32_SIZE..]);
-                let score = f32::from_le_bytes(score_bytes);
-                Some(ItemMatch { id, freq, score })
+
+                if last_id != Some(id) {
+                    doc_freq += 1;
+                    last_id = Some(id);
+                }
+
+                Some(id)
             })
-            .collect()
+            .collect();
+
+        let doc_count = self.data.len() as u32;
+        let mut freq = 0;
+        let mut matches = vec![];
+        for i in 0..inv_list.len() {
+            freq += 1;
+            let id = inv_list[i];
+            if inv_list.get(i + 1) == Some(&id) {
+                continue;
+            }
+
+            let score = match score {
+                Score::Count | Score::Occurrence => freq as f32,
+                Score::TfIdf => tfidf(freq, doc_freq, doc_count).unwrap_or(0.0),
+                Score::BM25 => bm25(
+                    freq,
+                    doc_freq,
+                    doc_count,
+                    self.avg_length,
+                    self.lengths[id],
+                    1.5,
+                    0.75,
+                )
+                .unwrap_or(0.0),
+            };
+
+            matches.push(ItemMatch { id, freq, score });
+            freq = 0;
+        }
+        println!(
+            "doc_freq: {doc_freq}, doc_count: {doc_count} matches: {:#?}",
+            matches
+        );
+        matches
     }
 
     #[inline]
@@ -126,8 +163,8 @@ impl PrefixIndex {
             .get(index + 1)
             .copied()
             .unwrap_or_else(|| self.index.len());
-        let num_ids = self.num_ids[index];
-        let end = next_start - num_ids * CHUNK_SIZE;
+        let num_ids = self.list_lengths[index];
+        let end = next_start - num_ids * U32_SIZE;
         &self.index[start..end]
     }
 
@@ -135,19 +172,11 @@ impl PrefixIndex {
         self.offsets.len()
     }
 
-    fn get_exact_matches(&self, keyword: &str) -> Option<WordItemMatches> {
-        match lower_bound(0, self.size(), |idx| {
-            self.get_keyword(idx).cmp(keyword.as_bytes())
-        }) {
-            None | Some((_, false)) => None,
-            Some((word_id, true)) => Some(WordItemMatches {
-                word_id,
-                matches: self.parse_matches(word_id),
-            }),
-        }
-    }
-
-    fn get_prefix_matches(&self, prefix: &str) -> (Option<WordItemMatches>, Vec<WordItemMatches>) {
+    fn get_matches(
+        &self,
+        prefix: &str,
+        score: Score,
+    ) -> (Option<WordItemMatches>, Vec<WordItemMatches>) {
         let mut exact_matches = None;
         let mut prefix_matches = vec![];
         let lower = match lower_bound(0, self.size(), |idx| {
@@ -157,12 +186,18 @@ impl PrefixIndex {
             Some((word_id, true)) => {
                 exact_matches = Some(WordItemMatches {
                     word_id,
-                    matches: self.parse_matches(word_id),
+                    matches: self.parse_matches(word_id, score),
                 });
                 word_id + 1
             }
             Some((index, false)) => index,
         };
+
+        // only exact matches for short keywords, because they would
+        // have too many prefix matches
+        if prefix.len() < MIN_PREFIX_MATCHES_LEN {
+            return (exact_matches, prefix_matches);
+        }
 
         let upper = upper_bound(lower, self.size(), |idx| {
             Self::prefix_cmp(self.get_keyword(idx), prefix.as_bytes())
@@ -172,7 +207,7 @@ impl PrefixIndex {
         for word_id in lower..upper {
             prefix_matches.push(WordItemMatches {
                 word_id,
-                matches: self.parse_matches(word_id),
+                matches: self.parse_matches(word_id, score),
             });
         }
         (exact_matches, prefix_matches)
@@ -225,18 +260,11 @@ impl<'py> IntoPyObject<'py> for Score {
 impl PrefixIndex {
     // implement functions from pyi interface
     #[staticmethod]
-    #[pyo3(signature = (data_file, index_dir, score = Score::Occurrence, k = 1.5, b = 0.75, use_synonyms = true))]
-    pub fn build(
-        data_file: &str,
-        index_dir: &str,
-        score: Score,
-        k: f32,
-        b: f32,
-        use_synonyms: bool,
-    ) -> anyhow::Result<()> {
+    #[pyo3(signature = (data_file, index_dir, use_synonyms = true))]
+    pub fn build(data_file: &str, index_dir: &str, use_synonyms: bool) -> anyhow::Result<()> {
         let index_dir = Path::new(index_dir);
         let data = IndexData::new(data_file)?;
-        let mut map: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+        let mut inv_lists: HashMap<String, Vec<u32>> = HashMap::new();
         let mut lengths = vec![];
         let mut id_to_index_file =
             BufWriter::new(File::create(index_dir.join("index.id-to-index"))?);
@@ -262,21 +290,10 @@ impl PrefixIndex {
             let index_bytes = u32::try_from(i)?.to_le_bytes();
             for name in names {
                 let mut length: u32 = 0;
-                for keyword in name
-                    .split_whitespace()
-                    .filter(|s| s.len() >= MIN_KEYWORD_LEN)
-                {
-                    let list = map.entry(keyword.to_string()).or_default();
-                    match list.last_mut() {
-                        Some((last_id, last_freq)) if last_id == &id => {
-                            *last_freq += 1;
-                            length += 1;
-                        }
-                        _ => {
-                            list.push((id, 1));
-                            length += 1;
-                        }
-                    }
+                for word in name.split_whitespace() {
+                    let inv_list = inv_lists.entry(word.to_string()).or_default();
+                    inv_list.push(id);
+                    length += 1;
                 }
                 if id == u32::MAX {
                     return Err(anyhow!("too many names, max {} supported", u32::MAX));
@@ -288,67 +305,23 @@ impl PrefixIndex {
             }
         }
 
-        // some stuff frequired for tf idf and bm25
-        let doc_count = id;
-        let total_length: f32 = lengths.iter().map(|l| *l as f32).sum();
-        let avg_length = total_length / doc_count.max(1) as f32;
-
         // first sort by key to have them in lexicographical order
         let mut index_file = BufWriter::new(File::create(index_dir.join("index.data"))?);
         let mut offset_file = BufWriter::new(File::create(index_dir.join("index.offsets"))?);
         let mut offset = 0;
-        map.into_iter()
-            .map(|(keyword, inv_list)| {
-                let doc_freq = inv_list.len() as u32;
-                let inv_list: Vec<_> = inv_list
-                    .into_iter()
-                    .map(|(id, freq)| match score {
-                        Score::Occurrence | Score::Count => (id, freq, freq as f32),
-                        Score::TfIdf => {
-                            let tf = tfidf(freq, doc_freq, doc_count).unwrap_or(0.0);
-                            (id, freq, tf)
-                        }
-                        Score::BM25 => {
-                            let doc_length = lengths[id as usize];
-                            let bm25 =
-                                bm25(freq, doc_freq, doc_count, avg_length, doc_length, k, b)
-                                    .unwrap_or(0.0);
-                            (id, freq, bm25)
-                        }
-                    })
-                    .collect();
-                (keyword, inv_list)
-            })
-            .sorted_by(|(a, _), (b, _)| a.cmp(b))
-            .try_for_each(|(keyword, ids)| -> anyhow::Result<_> {
-                index_file.write_all(keyword.as_bytes())?;
-                let offset_bytes = u64::try_from(offset)?.to_le_bytes();
-                offset_file.write_all(&offset_bytes)?;
-                offset += keyword.len();
-                let num_id_bytes = u64::try_from(ids.len())?.to_le_bytes();
-                offset_file.write_all(&num_id_bytes)?;
-                for (id, freq, score) in ids {
-                    index_file.write_all(&id.to_le_bytes())?;
-                    offset += U32_SIZE;
+        for (keyword, inv_list) in inv_lists.into_iter().sorted_by(|(a, _), (b, _)| a.cmp(b)) {
+            index_file.write_all(keyword.as_bytes())?;
+            let offset_bytes = u64::try_from(offset)?.to_le_bytes();
+            offset_file.write_all(&offset_bytes)?;
+            offset += keyword.len();
+            let inv_list_length = u64::try_from(inv_list.len())?.to_le_bytes();
+            offset_file.write_all(&inv_list_length)?;
 
-                    index_file.write_all(&freq.to_le_bytes())?;
-                    offset += U32_SIZE;
-
-                    index_file.write_all(&score.to_le_bytes())?;
-                    offset += F32_SIZE;
-                }
-                Ok(())
-            })?;
-
-        let mut config_file = BufWriter::new(File::create(index_dir.join("index.config"))?);
-        let score_bytes = match score {
-            Score::Occurrence => 0u32,
-            Score::Count => 1u32,
-            Score::TfIdf => 2u32,
-            Score::BM25 => 3u32,
+            for id in inv_list {
+                index_file.write_all(&id.to_le_bytes())?;
+                offset += U32_SIZE;
+            }
         }
-        .to_le_bytes();
-        config_file.write_all(&score_bytes)?;
         Ok(())
     }
 
@@ -358,15 +331,15 @@ impl PrefixIndex {
         let index_dir = Path::new(index_dir);
         let index = Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.data"))?)? });
         let mut offsets = vec![];
-        let mut num_ids = vec![];
+        let mut list_lengths = vec![];
         let offset_bytes = unsafe { Mmap::map(&File::open(index_dir.join("index.offsets"))?)? };
         for chunk in offset_bytes.chunks_exact(2 * U64_SIZE) {
             let mut offset = [0; U64_SIZE];
-            let mut num = [0; U64_SIZE];
+            let mut length = [0; U64_SIZE];
             offset.copy_from_slice(&chunk[..U64_SIZE]);
-            num.copy_from_slice(&chunk[U64_SIZE..]);
+            length.copy_from_slice(&chunk[U64_SIZE..]);
             offsets.push(u64::from_le_bytes(offset) as usize);
-            num_ids.push(u64::from_le_bytes(num) as usize);
+            list_lengths.push(u64::from_le_bytes(length) as usize);
         }
         let mut id_to_index = vec![];
         let id_to_index_bytes =
@@ -385,47 +358,39 @@ impl PrefixIndex {
             length.copy_from_slice(chunk);
             lengths.push(u32::from_le_bytes(length));
         }
+        let total_length: u32 = lengths.iter().sum();
+        let avg_length = total_length as f32 / lengths.len().max(1) as f32;
 
-        let config = unsafe { Mmap::map(&File::open(index_dir.join("index.config"))?)? };
-        let mut score_bytes = [0; U32_SIZE];
-        score_bytes.copy_from_slice(&config[..U32_SIZE]);
-        let score = match u32::from_le_bytes(score_bytes) {
-            0 => Score::Occurrence,
-            1 => Score::Count,
-            2 => Score::TfIdf,
-            3 => Score::BM25,
-            _ => return Err(anyhow!("invalid score type")),
-        };
         Ok(Self {
             data,
             index,
-            score,
+            avg_length,
             offsets: offsets.into(),
             lengths: lengths.into(),
-            num_ids: num_ids.into(),
+            list_lengths: list_lengths.into(),
             id_to_index: id_to_index.into(),
             sub_index: None,
         })
     }
 
-    pub fn find_matches(&self, query: &str) -> anyhow::Result<Vec<(usize, f32)>> {
+    #[pyo3(signature = (query, score = Score::Occurrence, k = 1.5, b = 0.75))]
+    pub fn find_matches(
+        &self,
+        query: &str,
+        score: Score,
+        k: f32,
+        b: f32,
+    ) -> anyhow::Result<Vec<(usize, f32)>> {
         let mut num_keywords = 0usize;
         Ok(normalize(query)
             .split_whitespace()
             .filter(|s| s.len() >= MIN_KEYWORD_LEN)
             .enumerate()
             .fold(
-                HashMap::<usize, Vec<_>>::new(),
+                HashMap::<_, Vec<_>>::new(),
                 |mut map, (keyword_id, keyword)| {
                     num_keywords += 1;
-                    let (exact_matches, prefix_matches) = if keyword.len() < MIN_PREFIX_MATCHES_LEN
-                    {
-                        // exact matches for keywords with this length
-                        // to avoid too many prefix matches
-                        (self.get_exact_matches(keyword), vec![])
-                    } else {
-                        self.get_prefix_matches(keyword)
-                    };
+                    let (exact_matches, prefix_matches) = self.get_matches(keyword, score);
 
                     // group matches by id
                     if let Some(WordItemMatches { word_id, matches }) = exact_matches {
@@ -460,7 +425,7 @@ impl PrefixIndex {
                 // scores is a list of tuples (query_id, keyword_id, is_exact, freq, score)
                 let index = self.get_index(id)?;
                 // let id_score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
-                let score = match self.score {
+                let score = match score {
                     Score::Occurrence => {
                         let num_keywords_matched = matches
                             .iter()

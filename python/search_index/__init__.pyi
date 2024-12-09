@@ -174,9 +174,6 @@ class PrefixIndex(SearchIndex):
     def build(
         data_file: str,
         index_dir: str,
-        score: str = "occurrence",
-        k: float = 1.75,
-        b: float = 0.75,
         use_synonyms: bool = True,
         **kwargs: Any,
     ) -> None:
@@ -184,6 +181,22 @@ class PrefixIndex(SearchIndex):
 
         Builds the index from the given file and saves
         it in the index dir.
+
+        """
+        pass
+
+    def find_matches(
+        self,
+        query: str,
+        score: str = "occurrence",
+        k: float = 1.75,
+        b: float = 0.75,
+        **kwargs: Any,
+    ) -> list[tuple[int, float]]:
+        """
+
+        Returns a sorted list of tuples containing IDs
+        and scores for all matches for the given query.
 
         """
         pass

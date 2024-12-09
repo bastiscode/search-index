@@ -148,10 +148,6 @@ impl PrefixIndex {
             matches.push(ItemMatch { id, freq, score });
             freq = 0;
         }
-        println!(
-            "doc_freq: {doc_freq}, doc_count: {doc_count} matches: {:#?}",
-            matches
-        );
         matches
     }
 

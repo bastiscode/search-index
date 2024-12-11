@@ -1,7 +1,10 @@
 import argparse
+import logging
 import time
 
 from search_index import PrefixIndex, QGramIndex, SimilarityIndex
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def parse_args():

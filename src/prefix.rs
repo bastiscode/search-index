@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use itertools::Itertools;
+use log::debug;
 use memmap2::Mmap;
 use ordered_float::OrderedFloat;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyString};
@@ -10,6 +11,7 @@ use std::{
     io::{BufWriter, Write},
     path::Path,
     sync::Arc,
+    time::Instant,
 };
 
 use crate::utils::{bm25, lower_bound, tfidf, upper_bound};
@@ -18,8 +20,6 @@ use crate::{
     utils::{list_intersection, normalize, IndexIter},
 };
 
-const MIN_KEYWORD_LEN: usize = 3;
-// should be larger or equal to MIN_KEYWORD_LEN
 const MIN_PREFIX_MATCHES_LEN: usize = 3;
 
 #[pyclass]
@@ -40,7 +40,6 @@ pub struct PrefixIndex {
 struct ItemMatch {
     id: usize,
     freq: u32,
-    score: f32,
 }
 
 #[derive(Debug)]
@@ -55,7 +54,6 @@ struct Match {
     word_id: usize,
     exact: bool,
     freq: u32,
-    score: f32,
 }
 
 const U64_SIZE: usize = size_of::<u64>();
@@ -63,13 +61,17 @@ const U32_SIZE: usize = size_of::<u32>();
 
 impl PrefixIndex {
     #[inline]
-    fn prefix_cmp(word: &[u8], prefix: &[u8]) -> Ordering {
+    fn prefix_cmp(word: &str, prefix: &str) -> Ordering {
         // prefix comparison
         // 1. return equal if prefix is prefix of word or equal
         // 2. return less if word is less than prefix
         // 3. return greater if word is greater than prefix
         let mut wi = 0;
         let mut pi = 0;
+
+        let word = word.as_bytes();
+        let prefix = prefix.as_bytes();
+
         while wi < word.len() && pi < prefix.len() {
             match word[wi].cmp(&prefix[pi]) {
                 Ordering::Equal => {
@@ -87,7 +89,25 @@ impl PrefixIndex {
     }
 
     #[inline]
-    fn parse_matches(&self, word_id: usize, score: Score) -> Vec<ItemMatch> {
+    fn get_name_or_synonym(&self, id: usize) -> Option<&str> {
+        let index = self.get_index(id)?;
+        let Some((name_id, true)) = lower_bound(0, self.id_to_index.len(), |i| {
+            self.id_to_index[i].cmp(&index)
+        }) else {
+            return None;
+        };
+        assert!(name_id <= id);
+        if name_id == id {
+            return self.data.get_val(index, 0);
+        }
+        // check synonyms
+        let synonyms = self.data.get_val(index, 2)?;
+        let offset = id - name_id - 1;
+        synonyms.split(";;;").nth(offset)
+    }
+
+    #[inline]
+    fn parse_inverted_list(&self, word_id: usize) -> Vec<ItemMatch> {
         let end = self
             .offsets
             .get(word_id + 1)
@@ -120,9 +140,8 @@ impl PrefixIndex {
             })
             .collect();
 
-        let doc_count = self.data.len() as u32;
-        let mut freq = 0;
         let mut matches = vec![];
+        let mut freq = 0;
         for i in 0..inv_list.len() {
             freq += 1;
             let id = inv_list[i];
@@ -130,82 +149,62 @@ impl PrefixIndex {
                 continue;
             }
 
-            let score = match score {
-                Score::Count | Score::Occurrence => freq as f32,
-                Score::TfIdf => tfidf(freq, doc_freq, doc_count).unwrap_or(0.0),
-                Score::BM25 => bm25(
-                    freq,
-                    doc_freq,
-                    doc_count,
-                    self.avg_length,
-                    self.lengths[id],
-                    1.5,
-                    0.75,
-                )
-                .unwrap_or(0.0),
-            };
-
-            matches.push(ItemMatch { id, freq, score });
+            matches.push(ItemMatch { id, freq });
             freq = 0;
         }
         matches
     }
 
     #[inline]
-    fn get_keyword(&self, index: usize) -> &[u8] {
-        let start = self.offsets[index];
+    fn get_word(&self, word_id: usize) -> &str {
+        let start = self.offsets[word_id];
         let next_start = self
             .offsets
-            .get(index + 1)
+            .get(word_id + 1)
             .copied()
             .unwrap_or_else(|| self.index.len());
-        let num_ids = self.list_lengths[index];
+        let num_ids = self.list_lengths[word_id];
         let end = next_start - num_ids * U32_SIZE;
-        &self.index[start..end]
+        unsafe { std::str::from_utf8_unchecked(&self.index[start..end]) }
     }
 
     fn size(&self) -> usize {
         self.offsets.len()
     }
 
-    fn get_matches(
-        &self,
-        prefix: &str,
-        score: Score,
-    ) -> (Option<WordItemMatches>, Vec<WordItemMatches>) {
+    fn get_word_id(&self, word: &str) -> Option<usize> {
+        match lower_bound(0, self.size(), |word_id| self.get_word(word_id).cmp(word)) {
+            Some((word_id, true)) => Some(word_id),
+            _ => None,
+        }
+    }
+
+    fn get_matches(&self, prefix: &str) -> (Option<WordItemMatches>, Vec<WordItemMatches>) {
+        assert!(prefix.len() >= MIN_PREFIX_MATCHES_LEN);
         let mut exact_matches = None;
         let mut prefix_matches = vec![];
-        let lower = match lower_bound(0, self.size(), |idx| {
-            self.get_keyword(idx).cmp(prefix.as_bytes())
-        }) {
-            None => return (exact_matches, prefix_matches),
-            Some((word_id, true)) => {
-                exact_matches = Some(WordItemMatches {
-                    word_id,
-                    matches: self.parse_matches(word_id, score),
-                });
-                word_id + 1
-            }
-            Some((index, false)) => index,
-        };
+        let lower_id =
+            match lower_bound(0, self.size(), |word_id| self.get_word(word_id).cmp(prefix)) {
+                None => return (exact_matches, prefix_matches),
+                Some((word_id, true)) => {
+                    exact_matches = Some(WordItemMatches {
+                        word_id,
+                        matches: self.parse_inverted_list(word_id),
+                    });
+                    word_id.saturating_add(1)
+                }
+                Some((word_id, false)) => word_id,
+            };
 
-        // only exact matches for short keywords, because they would
-        // have too many prefix matches
-        if prefix.len() < MIN_PREFIX_MATCHES_LEN {
-            return (exact_matches, prefix_matches);
-        }
-
-        let upper = upper_bound(lower, self.size(), |idx| {
-            Self::prefix_cmp(self.get_keyword(idx), prefix.as_bytes())
+        let upper_id = upper_bound(lower_id, self.size(), |word_id| {
+            Self::prefix_cmp(self.get_word(word_id), prefix)
         })
         .unwrap_or_else(|| self.size());
 
-        for word_id in lower..upper {
-            prefix_matches.push(WordItemMatches {
-                word_id,
-                matches: self.parse_matches(word_id, score),
-            });
-        }
+        prefix_matches.extend((lower_id..upper_id).map(|word_id| WordItemMatches {
+            word_id,
+            matches: self.parse_inverted_list(word_id),
+        }));
         (exact_matches, prefix_matches)
     }
 
@@ -377,50 +376,81 @@ impl PrefixIndex {
         k: f32,
         b: f32,
     ) -> anyhow::Result<Vec<(usize, f32)>> {
-        let mut num_keywords = 0usize;
-        Ok(normalize(query)
+        let start = Instant::now();
+        let query_norm = normalize(query);
+        let (long_keywords, short_keywords): (Vec<_>, Vec<_>) = query_norm
             .split_whitespace()
-            .filter(|s| s.len() >= MIN_KEYWORD_LEN)
             .enumerate()
-            .fold(
-                HashMap::<_, Vec<_>>::new(),
-                |mut map, (keyword_id, keyword)| {
-                    num_keywords += 1;
-                    let (exact_matches, prefix_matches) = self.get_matches(keyword, score);
+            .partition(|(_, keyword)| keyword.len() >= MIN_PREFIX_MATCHES_LEN);
+        let num_keywords = long_keywords.len() + short_keywords.len();
 
-                    // group matches by id
-                    if let Some(WordItemMatches { word_id, matches }) = exact_matches {
-                        for kw_match in matches {
-                            map.entry(kw_match.id).or_default().push(Match {
-                                keyword_id,
-                                word_id,
-                                exact: true,
-                                freq: kw_match.freq,
-                                score: kw_match.score,
-                            });
+        let mut item_matches: HashMap<_, Vec<_>> = HashMap::new();
+        for (keyword_id, keyword) in long_keywords {
+            let (exact_matches, prefix_matches) = self.get_matches(keyword);
+
+            // group matches by id
+            if let Some(WordItemMatches { word_id, matches }) = exact_matches {
+                for kw_match in matches {
+                    item_matches.entry(kw_match.id).or_default().push(Match {
+                        keyword_id,
+                        word_id,
+                        exact: true,
+                        freq: kw_match.freq,
+                    });
+                }
+            }
+
+            for WordItemMatches { word_id, matches } in prefix_matches {
+                for kw_match in matches {
+                    item_matches.entry(kw_match.id).or_default().push(Match {
+                        keyword_id,
+                        word_id,
+                        exact: false,
+                        freq: kw_match.freq,
+                    });
+                }
+            }
+        }
+
+        if !short_keywords.is_empty() {
+            for (id, matches) in item_matches.iter_mut() {
+                let Some(name) = self.get_name_or_synonym(*id) else {
+                    continue;
+                };
+                let name_norm = normalize(name);
+                let words: HashMap<_, _> =
+                    name_norm
+                        .split_whitespace()
+                        .fold(HashMap::new(), |mut map, word| {
+                            map.entry(word).and_modify(|freq| *freq += 1).or_insert(1);
+                            map
+                        });
+
+                // add new keyword matches
+                for &(keyword_id, keyword) in short_keywords.iter() {
+                    for (word, &freq) in words.iter() {
+                        if !word.starts_with(keyword) {
+                            continue;
                         }
+                        let Some(word_id) = self.get_word_id(word) else {
+                            continue;
+                        };
+                        matches.push(Match {
+                            keyword_id,
+                            word_id,
+                            exact: word.len() == keyword.len(),
+                            freq,
+                        });
                     }
+                }
+            }
+        }
 
-                    for WordItemMatches { word_id, matches } in prefix_matches {
-                        for kw_match in matches {
-                            map.entry(kw_match.id).or_default().push(Match {
-                                keyword_id,
-                                word_id,
-                                exact: false,
-                                freq: kw_match.freq,
-                                score: kw_match.score,
-                            });
-                        }
-                    }
-
-                    map
-                },
-            )
+        let item_matches: Vec<_> = item_matches
             .into_iter()
             .filter_map(|(id, matches)| {
                 // scores is a list of tuples (query_id, keyword_id, is_exact, freq, score)
                 let index = self.get_index(id)?;
-                // let id_score = self.data.get_val(index, 1).and_then(|s| s.parse().ok())?;
                 let score = match score {
                     Score::Occurrence => {
                         let num_keywords_matched = matches
@@ -458,12 +488,19 @@ impl PrefixIndex {
                     _ => !unimplemented!(),
                 };
                 Some((index, score))
-                // sort this list by query_id, keyword_id, is_exact
             })
             .sorted_by_key(|&(index, score)| (index, Reverse(OrderedFloat(score))))
             .unique_by(|&(index, ..)| index)
             .sorted_by_key(|&(index, score)| (Reverse(OrderedFloat(score)), index))
-            .collect())
+            .collect();
+
+        debug!(
+            "Got {} matches for query '{query}' in {:.2}ms",
+            item_matches.len(),
+            start.elapsed().as_secs_f32() * 1000.0
+        );
+
+        Ok(item_matches)
     }
 
     pub fn get_type(&self) -> &str {
@@ -505,10 +542,5 @@ impl PrefixIndex {
 
     pub fn __iter__(&self) -> IndexIter {
         IndexIter::new(self.data.clone(), self.sub_index.clone())
-    }
-
-    #[getter]
-    pub fn min_keyword_length(&self) -> usize {
-        MIN_KEYWORD_LEN
     }
 }

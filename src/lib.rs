@@ -13,6 +13,8 @@ use utils::normalize;
 
 #[pymodule]
 fn _internal(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    pyo3_log::init();
+
     m.add_class::<QGramIndex>()?;
     m.add_class::<PrefixIndex>()?;
     m.add_class::<IndexData>()?;

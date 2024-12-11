@@ -13,6 +13,8 @@ anyhow = "1.0"
 rayon = "1.10"
 rand = "0.8"
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310", "anyhow"] }
+log = "0.4"
+pyo3-log = "0.12"
 itertools = "0.13"
 memmap2 = "0.9"
 serde = { version = "1.0", features = ["derive"] }

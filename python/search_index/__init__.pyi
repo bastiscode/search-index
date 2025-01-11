@@ -1,6 +1,6 @@
 from typing import Any, Iterator
 
-from search_index import SearchIndex
+from search_index.base import SearchIndex
 
 def normalize(s: str) -> str:
     """

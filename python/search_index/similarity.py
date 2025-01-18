@@ -1,7 +1,7 @@
 import json
 import os
 import random
-from typing import Iterator
+from typing import Iterable, Iterator
 
 import faiss
 import numpy as np
@@ -105,6 +105,7 @@ class EmbeddingModel:
                 normalize_embeddings=True,
                 batch_size=len(batch),
                 precision=self.precision,
+                show_progress_bar=False,
             )[:, : self._dim]
             full_embeddings.extend(embeddings)
 
@@ -157,9 +158,7 @@ class SimilarityIndex(SearchIndex):
         """
         data = IndexData(data_file)
 
-        def data_iter(
-            indices: Iterator[int] | None = None,
-        ) -> tuple[int, list[str]]:
+        def data_iter(indices: Iterable[int] | None = None) -> tuple[int, list[str]]:
             if indices is None:
                 indices = range(len(data))
 
@@ -236,10 +235,9 @@ class SimilarityIndex(SearchIndex):
             train_factor = train_size / index_size
             data_samples = int(train_factor * len(data))
 
+            train_samples = random.sample(range(len(data)), data_samples)
             for id, text in tqdm(
-                data_iter(
-                    random.sample(range(len(data)), data_samples),
-                ),
+                data_iter(train_samples),
                 desc="Getting train data",
                 total=data_samples,
                 disable=not show_progress,
@@ -248,7 +246,9 @@ class SimilarityIndex(SearchIndex):
                 train_texts.extend(text)
 
             train_embeddings = emb_model.embed(
-                train_texts, batch_size=batch_size, show_progress=show_progress
+                train_texts,
+                batch_size=batch_size,
+                show_progress=show_progress,
             )
 
             if show_progress:
@@ -277,7 +277,9 @@ class SimilarityIndex(SearchIndex):
                 index_texts.extend(text)
 
             embeddings = emb_model.embed(
-                index_texts, batch_size=batch_size, show_progress=show_progress
+                index_texts,
+                batch_size=batch_size,
+                show_progress=show_progress,
             )
             index.add_with_ids(embeddings, index_ids)
 
@@ -320,7 +322,11 @@ class SimilarityIndex(SearchIndex):
         return SimilarityIndex(model, data, index)
 
     def find_matches(
-        self, query: str, k: int = 10, nprobe: int = 10
+        self,
+        query: str,
+        k: int = 10,
+        nprobe: int = 10,
+        min_score: float = float("-inf"),
     ) -> list[tuple[int, float]]:
         """
 
@@ -328,10 +334,10 @@ class SimilarityIndex(SearchIndex):
         and ranking key for all matches for the given query.
 
         """
-        # we want to scale k because we might have ids in the top k 
+        # we want to scale k because we might have ids in the top k
         # results that point to the same data point, in which case
         # we get less than k unique results; this is an approximation
-        # to scale k based on the number of indexed vectors per data point * 2
+        # to scale k based on the number of indexed vectors per data point
         k_factor = self.index.ntotal / max(1, len(self.data))
         k_scaled = round(k * k_factor)
 
@@ -363,6 +369,9 @@ class SimilarityIndex(SearchIndex):
             elif index in seen:
                 continue
             elif len(deduped) >= k:
+                break
+            elif score < min_score:
+                # break because scores are sorted
                 break
 
             seen.add(index)

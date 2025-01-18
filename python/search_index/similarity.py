@@ -121,11 +121,13 @@ class SimilarityIndex(SearchIndex):
         model: EmbeddingModel,
         data: IndexData,
         index: faiss.Index,
+        index_name: str,
         subset: set[int] | None = None,
     ) -> None:
         self.model = model
         self.data = data
         self.index = index
+        self.index_name = index_name
         self.subset = subset
 
     @staticmethod
@@ -291,6 +293,7 @@ class SimilarityIndex(SearchIndex):
         with open(os.path.join(index_dir, "config.json"), "w") as f:
             json.dump(
                 {
+                    "index_name": index_name,
                     "model": model,
                     "precision": precision,
                     "embedding_dim": embedding_dim,
@@ -316,8 +319,9 @@ class SimilarityIndex(SearchIndex):
         else:
             index = faiss.read_index_binary(index_file)
 
+        index_name = config.pop("index_name")
         model = EmbeddingModel(**config, device=device)
-        return SimilarityIndex(model, data, index)
+        return SimilarityIndex(model, data, index, index_name)
 
     def find_matches(
         self, query: str, k: int = 10, nprobe: int = 10
@@ -328,7 +332,7 @@ class SimilarityIndex(SearchIndex):
         and ranking key for all matches for the given query.
 
         """
-        # we want to scale k because we might have ids in the top k 
+        # we want to scale k because we might have ids in the top k
         # results that point to the same data point, in which case
         # we get less than k unique results; this is an approximation
         # to scale k based on the number of indexed vectors per data point * 2
@@ -340,15 +344,24 @@ class SimilarityIndex(SearchIndex):
         else:
             selector = None
 
+        is_ivf = "IVF" in self.index_name
+        is_binary = self.index_name.startswith("B")
+        assert is_binary == (
+            self.model.precision == "ubinary"
+        ), "Model and index mismatch"
+
         search_kwargs = {}
-        if isinstance(self.index, faiss.IndexIVF):
+        if is_ivf and not is_binary:
+            # ivf float index
             search_kwargs["params"] = faiss.SearchParametersIVF(
                 sel=selector, nprobe=nprobe
             )
-        elif isinstance(self.index, faiss.IndexFlat):
+        elif not is_binary:
+            # flat float index
             search_kwargs["params"] = faiss.SearchParameters(sel=selector)
-        elif isinstance(self.index, faiss.IndexBinaryIVF):
-            # does not support search yet, so set nprobe directly
+        elif is_ivf and is_binary:
+            # ivf binary index
+            # does not support search params yet, so set nprobe directly
             self.index.nprobe = nprobe
 
         query_embeddings = self.model.embed([query])
@@ -361,6 +374,10 @@ class SimilarityIndex(SearchIndex):
             if index < 0:
                 break
             elif index in seen:
+                continue
+            # this is required because binary indices do not support
+            # ID selectors yet, so we might get indices outside the subset
+            elif self.subset is not None and index not in self.subset:
                 continue
             elif len(deduped) >= k:
                 break
@@ -407,7 +424,13 @@ class SimilarityIndex(SearchIndex):
         else:
             subset = set(ids)
 
-        return SimilarityIndex(self.model, self.data, self.index, subset)
+        return SimilarityIndex(
+            self.model,
+            self.data,
+            self.index,
+            self.index_name,
+            subset,
+        )
 
     def __len__(self) -> int:
         """

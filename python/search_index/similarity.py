@@ -343,7 +343,8 @@ class SimilarityIndex(SearchIndex):
         # we get less than k unique results; this is an approximation
         # to scale k based on the number of indexed vectors per data point
         k_factor = self.index.ntotal / max(1, len(self.data))
-        k_scaled = round(k * k_factor)
+        # scale also by 2 to be sure
+        k_scaled = round(k * k_factor * 2)
 
         if self.subset is not None:
             selector = faiss.IDSelectorBatch(list(self.subset))
@@ -357,18 +358,23 @@ class SimilarityIndex(SearchIndex):
         ), "Model and index mismatch"
 
         search_kwargs = {}
-        if is_ivf and not is_binary:
-            # ivf float index
-            search_kwargs["params"] = faiss.SearchParametersIVF(
-                sel=selector, nprobe=nprobe
-            )
-        elif not is_binary:
-            # flat float index
-            search_kwargs["params"] = faiss.SearchParameters(sel=selector)
-        elif is_ivf and is_binary:
-            # ivf binary index
-            # does not support search params yet, so set nprobe directly
-            self.index.nprobe = nprobe
+        if is_binary:
+            if is_ivf:
+                # ivf binary index
+                # does not support search params yet, so set nprobe directly
+                self.index.nprobe = nprobe
+
+            # selector not yet supported for binary indices, handled below
+            # in deduplication currently
+        else:
+            if is_ivf:
+                # ivf float index
+                search_kwargs["params"] = faiss.SearchParametersIVF(
+                    sel=selector, nprobe=nprobe
+                )
+            else:
+                # flat float index
+                search_kwargs["params"] = faiss.SearchParameters(sel=selector)
 
         query_embeddings = self.model.embed([query])
         scores, indices = self.index.search(query_embeddings, k_scaled, **search_kwargs)

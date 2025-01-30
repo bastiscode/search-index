@@ -433,7 +433,7 @@ class SimilarityIndex(SearchIndex):
         Creates a sub-index containing only the given IDs.
 
         """
-        assert all(0 <= id < len(self) for id in ids), "invalid ID in ID list"
+        assert all(0 <= id < len(self.data) for id in ids), "invalid ID in ID list"
         if self.subset is not None:
             subset = self.subset.intersection(ids)
         else:

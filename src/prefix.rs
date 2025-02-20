@@ -20,7 +20,7 @@ use crate::{
     utils::{list_intersection, normalize, IndexIter},
 };
 
-const MIN_PREFIX_MATCHES_LEN: usize = 3;
+const MIN_KEYWORD_LEN: usize = 3;
 
 #[pyclass]
 #[derive(Clone)]
@@ -180,7 +180,6 @@ impl PrefixIndex {
     }
 
     fn get_matches(&self, prefix: &str) -> (Option<WordItemMatches>, Vec<WordItemMatches>) {
-        assert!(prefix.len() >= MIN_PREFIX_MATCHES_LEN);
         let mut exact_matches = None;
         let mut prefix_matches = vec![];
         let lower_id =
@@ -368,20 +367,38 @@ impl PrefixIndex {
         })
     }
 
-    #[pyo3(signature = (query, score = Score::Occurrence, k = 1.5, b = 0.75))]
+    #[pyo3(signature = (
+        query, 
+        score = Score::Occurrence, 
+        k = 1.5, 
+        b = 0.75, 
+        min_keyword_length = None,
+        no_refinement = false
+    ))]
     pub fn find_matches(
         &self,
         query: &str,
         score: Score,
         k: f32,
         b: f32,
+        min_keyword_length: Option<usize>,
+        no_refinement: bool,
     ) -> anyhow::Result<Vec<(usize, f32)>> {
+        let min_keyword_length = min_keyword_length
+            .map(|len| len.max(1))
+            .unwrap_or(MIN_KEYWORD_LEN);
         let start = Instant::now();
         let query_norm = normalize(query);
-        let (long_keywords, short_keywords): (Vec<_>, Vec<_>) = query_norm
+        let (long_keywords, mut short_keywords): (Vec<_>, Vec<_>) = query_norm
             .split_whitespace()
             .enumerate()
-            .partition(|(_, keyword)| keyword.len() >= MIN_PREFIX_MATCHES_LEN);
+            .partition(|(_, keyword)| keyword.len() >= min_keyword_length);
+
+        if no_refinement {
+            // not refiment, just use the long keywords
+            short_keywords.clear();
+        }
+
         let num_keywords = long_keywords.len() + short_keywords.len();
 
         let mut item_matches: HashMap<_, Vec<_>> = HashMap::new();

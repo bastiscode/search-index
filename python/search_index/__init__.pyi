@@ -151,25 +151,6 @@ class PrefixIndex(SearchIndex):
     A prefix index for keyword prefix search.
 
     """
-    @property
-    def score(self) -> str:
-        """
-
-        The scoring function used.
-
-        """
-        pass
-
-    @property
-    def min_keyword_length(self) -> int:
-        """
-
-        The minimum keyword length, all keywords shorter than this
-        are ignored.
-
-        """
-        pass
-
     @staticmethod
     def build(
         data_file: str,
@@ -191,6 +172,8 @@ class PrefixIndex(SearchIndex):
         score: str = "occurrence",
         k: float = 1.75,
         b: float = 0.75,
+        min_keyword_length: int | None = None,
+        no_refinement: bool = False,
         **kwargs: Any,
     ) -> list[tuple[int, float]]:
         """

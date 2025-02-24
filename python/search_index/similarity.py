@@ -330,7 +330,7 @@ class SimilarityIndex(SearchIndex):
         query: str,
         k: int = 10,
         nprobe: int = 10,
-        min_score: float = float("-inf"),
+        min_score: float | None = None,
     ) -> list[tuple[int, float]]:
         """
 
@@ -393,7 +393,7 @@ class SimilarityIndex(SearchIndex):
                 continue
             elif len(deduped) >= k:
                 break
-            elif score < min_score:
+            elif min_score is not None and score < min_score:
                 # break because scores are sorted
                 break
 

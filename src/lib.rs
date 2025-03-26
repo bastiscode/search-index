@@ -4,11 +4,12 @@ mod prefix;
 mod qgram;
 mod utils;
 
-use data::IndexData;
-use mapping::Mapping;
-use prefix::PrefixIndex;
+pub use data::IndexData;
+pub use mapping::Mapping;
+pub use prefix::{PrefixIndex, Score};
 use pyo3::prelude::*;
-use qgram::{ied, ped, QGramIndex};
+pub use qgram::QGramIndex;
+use qgram::{ied, ped};
 use utils::normalize;
 
 #[pymodule]

@@ -569,10 +569,10 @@ pub(crate) fn ed(a: &str, b: &str) -> usize {
 mod tests {
     use super::{ed, ied, ped};
 
-    use rand::{distributions::Alphanumeric, Rng};
+    use rand::{distr::Alphanumeric, Rng};
 
     fn random_ascii(n: usize) -> String {
-        rand::thread_rng()
+        rand::rng()
             .sample_iter(&Alphanumeric)
             .take(n)
             .map(char::from)
@@ -593,10 +593,10 @@ mod tests {
         assert_eq!(ped("", "freiburg", None), 0);
         assert_eq!(ped("", "", None), 0);
         for _ in 0..1000 {
-            let p_len = rand::thread_rng().gen_range(0..=20);
+            let p_len = rand::rng().random_range(0..=20);
             let prefix = random_ascii(p_len);
             // random integer
-            let s_len = rand::thread_rng().gen_range(0..=20);
+            let s_len = rand::rng().random_range(0..=20);
             let string = random_ascii(s_len);
             let p_ed = ped(&prefix, &string, None);
             if p_len > s_len {
@@ -625,10 +625,10 @@ mod tests {
         assert_eq!(ied("university", "uni"), 7);
         assert_eq!(ied("uriversity", "uni"), 8);
         for _ in 0..1000 {
-            let i_len = rand::thread_rng().gen_range(0..=20);
+            let i_len = rand::rng().random_range(0..=20);
             let infix = random_ascii(i_len);
             // random integer
-            let s_len = rand::thread_rng().gen_range(0..=20);
+            let s_len = rand::rng().random_range(0..=20);
             let string = random_ascii(s_len);
             let i_ed = ied(&infix, &string);
             if i_len >= s_len {
@@ -653,10 +653,10 @@ mod tests {
         assert_eq!(ed("cat", "the cat sat on the mat"), 19);
         assert_eq!(ed("uni", "university"), 7);
         for _ in 0..1000 {
-            let a_len = rand::thread_rng().gen_range(0..=20);
+            let a_len = rand::rng().random_range(0..=20);
             let a = random_ascii(a_len);
             // random integer
-            let b_len = rand::thread_rng().gen_range(0..=20);
+            let b_len = rand::rng().random_range(0..=20);
             let b = random_ascii(b_len);
             let a_ed = ed(&a, &b);
             let b_ed = ed(&b, &a);

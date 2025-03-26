@@ -74,6 +74,10 @@ impl IndexData {
         self.inner.offsets.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn iter(&self) -> IndexDataIter {
         IndexDataIter { data: self, idx: 0 }
     }

@@ -140,3 +140,5 @@ dmypy.json
 # Custom
 
 /python/search_index/_internal*.so
+/benches/data.tsv
+/benches/index

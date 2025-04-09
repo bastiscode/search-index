@@ -189,29 +189,29 @@ mod test {
     fn test_normalize() {
         // empty string
         assert_eq!(normalize(""), "");
-        
+
         // basic lowercase conversion
         assert_eq!(normalize("Hello World"), "hello world");
-        
+
         // remove punctuation at word boundaries
         assert_eq!(normalize("Hello, World!"), "hello world");
         assert_eq!(normalize("(Hello) [World]"), "hello world");
-        
+
         // keep punctuation inside words
         assert_eq!(normalize("it's a test"), "it's a test");
         assert_eq!(normalize("semi-automated"), "semi-automated");
-        
+
         // handle words with only punctuation
         assert_eq!(normalize("Hello --- World"), "hello --- world");
-        
+
         // handle non-ASCII characters
         assert_eq!(normalize("Café"), "cafe");
         assert_eq!(normalize("Größe"), "grosse");
         assert_eq!(normalize("Niño"), "nino");
-        
+
         // handle emojis
         assert_eq!(normalize("Hello 😊 World"), "hello blush world");
-        
+
         // combination of cases
         assert_eq!(normalize("!Hello, Größe-Test!"), "hello grosse-test");
     }

@@ -368,10 +368,10 @@ impl PrefixIndex {
     }
 
     #[pyo3(signature = (
-        query, 
-        score = Score::Occurrence, 
-        k = 1.5, 
-        b = 0.75, 
+        query,
+        score = Score::Occurrence,
+        k = 1.5,
+        b = 0.75,
         min_keyword_length = None,
         no_refinement = false
     ))]

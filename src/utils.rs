@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, sync::Arc};
 
 use any_ascii::any_ascii;
+use itertools::Itertools;
 use pyo3::prelude::*;
 
 use crate::data::IndexData;
@@ -51,13 +52,29 @@ pub(crate) fn normalize(name: &str) -> String {
         return String::new();
     }
     let norm = any_ascii(name);
-    if norm.is_empty() {
+    let norm = if norm.is_empty() {
         // if ascii conversion produces an empty string, return lowercase
         // as fallback
         name.to_lowercase()
     } else {
         norm.to_lowercase()
-    }
+    };
+    // remove all punctuation characters around words
+    // but keep punctuation inside words and words containing
+    // only punctuation
+    norm.split_whitespace()
+        .map(|word| {
+            let trimmed = word
+                .trim_end_matches(|c: char| c.is_ascii_punctuation())
+                .trim_start_matches(|c: char| c.is_ascii_punctuation());
+            // only punctuation
+            if trimmed.is_empty() {
+                word.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .join(" ")
 }
 
 pub(crate) fn list_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
@@ -166,7 +183,38 @@ pub(crate) fn upper_bound(
 
 #[cfg(test)]
 mod test {
-    use super::{bm25, lower_bound, tfidf, upper_bound};
+    use super::{bm25, lower_bound, normalize, tfidf, upper_bound};
+
+    #[test]
+    fn test_normalize() {
+        // empty string
+        assert_eq!(normalize(""), "");
+        
+        // basic lowercase conversion
+        assert_eq!(normalize("Hello World"), "hello world");
+        
+        // remove punctuation at word boundaries
+        assert_eq!(normalize("Hello, World!"), "hello world");
+        assert_eq!(normalize("(Hello) [World]"), "hello world");
+        
+        // keep punctuation inside words
+        assert_eq!(normalize("it's a test"), "it's a test");
+        assert_eq!(normalize("semi-automated"), "semi-automated");
+        
+        // handle words with only punctuation
+        assert_eq!(normalize("Hello --- World"), "hello --- world");
+        
+        // handle non-ASCII characters
+        assert_eq!(normalize("Café"), "cafe");
+        assert_eq!(normalize("Größe"), "grosse");
+        assert_eq!(normalize("Niño"), "nino");
+        
+        // handle emojis
+        assert_eq!(normalize("Hello 😊 World"), "hello blush world");
+        
+        // combination of cases
+        assert_eq!(normalize("!Hello, Größe-Test!"), "hello grosse-test");
+    }
 
     #[test]
     fn test_bounds() {

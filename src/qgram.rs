@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::iter::repeat;
+use std::iter::repeat_n;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -75,7 +75,7 @@ impl QGramIndex {
         assert!(!name.is_empty(), "name must not be empty");
         assert!(q > 0, "q must be greater than 0");
         let chars: Vec<_> = match distance {
-            Distance::Ped => repeat('$').take(q - 1).chain(name.chars()).collect(),
+            Distance::Ped => repeat_n('$', q - 1).chain(name.chars()).collect(),
             Distance::Ied => name.chars().collect(),
         };
         let start = if chars.len() < q && full {

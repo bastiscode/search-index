@@ -27,11 +27,12 @@ const MIN_KEYWORD_LEN: usize = 3;
 pub struct PrefixIndex {
     #[pyo3(get)]
     data: IndexData,
-    index: Arc<Mmap>,
-    offsets: Arc<[usize]>,
+    keywords: Arc<Mmap>,
+    inv_lists: Arc<Mmap>,
+    keyword_offsets: Arc<[usize]>,
+    inv_list_offsets: Arc<[usize]>,
     lengths: Arc<[u32]>,
     avg_length: f32,
-    list_lengths: Arc<[usize]>,
     id_to_index: Arc<[usize]>,
     sub_index: Option<Arc<[usize]>>,
 }
@@ -56,7 +57,6 @@ struct Match {
     freq: u32,
 }
 
-const U64_SIZE: usize = size_of::<u64>();
 const U32_SIZE: usize = size_of::<u32>();
 
 impl PrefixIndex {
@@ -108,68 +108,73 @@ impl PrefixIndex {
 
     #[inline]
     fn parse_inverted_list(&self, word_id: usize) -> Vec<ItemMatch> {
+        let start = self.inv_list_offsets[word_id];
         let end = self
-            .offsets
+            .inv_list_offsets
             .get(word_id + 1)
             .copied()
-            .unwrap_or_else(|| self.index.len());
-        let list_length = self.list_lengths[word_id];
-        let start = end - list_length * U32_SIZE;
+            .unwrap_or_else(|| self.inv_lists.len());
+        let list_length = (end - start) / U32_SIZE;
 
-        let mut doc_freq = 0;
-        let mut last_id = None;
-        let inv_list: Vec<_> = self.index[start..end]
-            .chunks_exact(U32_SIZE)
-            .filter_map(|bytes| {
-                let mut id_bytes = [0; U32_SIZE];
-                id_bytes.copy_from_slice(&bytes[..U32_SIZE]);
-                let id = u32::from_le_bytes(id_bytes) as usize;
-                if let Some(sub_index) = self.sub_index.as_ref() {
-                    let idx = self.get_index(id)?;
-                    if sub_index.binary_search(&idx).is_err() {
-                        return None;
-                    }
-                }
-
-                if last_id != Some(id) {
-                    doc_freq += 1;
-                    last_id = Some(id);
-                }
-
-                Some(id)
-            })
-            .collect();
-
-        let mut matches = vec![];
+        let mut matches = Vec::with_capacity(list_length);
         let mut freq = 0;
-        for i in 0..inv_list.len() {
-            freq += 1;
-            let id = inv_list[i];
-            if inv_list.get(i + 1) == Some(&id) {
-                continue;
+        let mut last_id: Option<&u32> = None;
+
+        // read the inverted list
+        let (head, inv_list, tail) = unsafe { self.inv_lists[start..end].align_to::<u32>() };
+        assert!(
+            head.is_empty() && tail.is_empty(),
+            "inverted list not aligned"
+        );
+
+        for id in inv_list {
+            if let Some(sub_index) = self.sub_index.as_ref() {
+                let idx = self.get_index(*id as usize).expect("Invalid id");
+                if sub_index.binary_search(&idx).is_err() {
+                    continue;
+                }
             }
 
-            matches.push(ItemMatch { id, freq });
-            freq = 0;
+            if let Some(last) = last_id {
+                if last != id {
+                    matches.push(ItemMatch {
+                        id: *last as usize,
+                        freq,
+                    });
+                    freq = 1;
+                } else {
+                    freq += 1;
+                }
+            } else {
+                freq = 1;
+            }
+            last_id = Some(id);
         }
+
+        // dont forget the last run
+        if let Some(last) = last_id {
+            matches.push(ItemMatch {
+                id: *last as usize,
+                freq,
+            });
+        }
+
         matches
     }
 
     #[inline]
     fn get_word(&self, word_id: usize) -> &str {
-        let start = self.offsets[word_id];
-        let next_start = self
-            .offsets
+        let start = self.keyword_offsets[word_id];
+        let end = self
+            .keyword_offsets
             .get(word_id + 1)
             .copied()
-            .unwrap_or_else(|| self.index.len());
-        let num_ids = self.list_lengths[word_id];
-        let end = next_start - num_ids * U32_SIZE;
-        unsafe { std::str::from_utf8_unchecked(&self.index[start..end]) }
+            .unwrap_or_else(|| self.keywords.len());
+        unsafe { std::str::from_utf8_unchecked(&self.keywords[start..end]) }
     }
 
     fn size(&self) -> usize {
-        self.offsets.len()
+        self.keyword_offsets.len()
     }
 
     fn get_word_id(&self, word: &str) -> Option<usize> {
@@ -300,21 +305,25 @@ impl PrefixIndex {
         }
 
         // first sort by key to have them in lexicographical order
-        let mut index_file = BufWriter::new(File::create(index_dir.join("index.data"))?);
+        let mut keyword_file = BufWriter::new(File::create(index_dir.join("index.keywords"))?);
+        let mut inv_list_file = BufWriter::new(File::create(index_dir.join("index.inv-lists"))?);
         let mut offset_file = BufWriter::new(File::create(index_dir.join("index.offsets"))?);
-        let mut offset = 0;
+        let mut keyword_offset = 0;
+        let mut inv_list_offset = 0;
         for (keyword, inv_list) in inv_lists.into_iter().sorted_by(|(a, _), (b, _)| a.cmp(b)) {
-            index_file.write_all(keyword.as_bytes())?;
-            let offset_bytes = u64::try_from(offset)?.to_le_bytes();
-            offset_file.write_all(&offset_bytes)?;
-            offset += keyword.len();
-            let inv_list_length = u64::try_from(inv_list.len())?.to_le_bytes();
-            offset_file.write_all(&inv_list_length)?;
+            // write keyword and offset
+            keyword_file.write_all(keyword.as_bytes())?;
+            let keyword_offset_bytes = u64::try_from(keyword_offset)?.to_le_bytes();
+            offset_file.write_all(&keyword_offset_bytes)?;
+            keyword_offset += keyword.len();
 
-            for id in inv_list {
-                index_file.write_all(&id.to_le_bytes())?;
-                offset += U32_SIZE;
+            // write inverted list and offset
+            for id in &inv_list {
+                inv_list_file.write_all(&id.to_le_bytes())?;
             }
+            let inv_list_offset_bytes = u64::try_from(inv_list_offset)?.to_le_bytes();
+            offset_file.write_all(&inv_list_offset_bytes)?;
+            inv_list_offset += inv_list.len() * U32_SIZE;
         }
         Ok(())
     }
@@ -323,46 +332,55 @@ impl PrefixIndex {
     pub fn load(data_file: &str, index_dir: &str) -> anyhow::Result<Self> {
         let data = IndexData::new(data_file)?;
         let index_dir = Path::new(index_dir);
-        let index = Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.data"))?)? });
-        let mut offsets = vec![];
-        let mut list_lengths = vec![];
+
+        let keywords =
+            Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.keywords"))?)? });
+        let inv_lists =
+            Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.inv-lists"))?)? });
+
+        let mut keyword_offsets = vec![];
+        let mut inv_list_offsets = vec![];
+
         let offset_bytes = unsafe { Mmap::map(&File::open(index_dir.join("index.offsets"))?)? };
-        for chunk in offset_bytes.chunks_exact(2 * U64_SIZE) {
-            let mut offset = [0; U64_SIZE];
-            let mut length = [0; U64_SIZE];
-            offset.copy_from_slice(&chunk[..U64_SIZE]);
-            length.copy_from_slice(&chunk[U64_SIZE..]);
-            offsets.push(u64::from_le_bytes(offset) as usize);
-            list_lengths.push(u64::from_le_bytes(length) as usize);
+        let (head, offsets, tail) = unsafe { offset_bytes.align_to::<u64>() };
+        assert!(head.is_empty() && tail.is_empty(), "offsets not aligned");
+
+        for (keyword_offset, inv_list_offset) in offsets.iter().tuples() {
+            keyword_offsets.push(*keyword_offset as usize);
+            inv_list_offsets.push(*inv_list_offset as usize);
         }
-        let mut id_to_index = vec![];
+        let keyword_offsets = Arc::from(keyword_offsets);
+        let inv_list_offsets = Arc::from(inv_list_offsets);
+
         let id_to_index_bytes =
             unsafe { Mmap::map(&File::open(index_dir.join("index.id-to-index"))?)? };
-        for chunk in id_to_index_bytes.chunks_exact(U32_SIZE) {
-            let mut index = [0; U32_SIZE];
-            index.copy_from_slice(chunk);
-            let index = u32::from_le_bytes(index) as usize;
-            id_to_index.push(index);
-        }
+        let (head, id_to_index, tail) = unsafe { id_to_index_bytes.align_to::<u32>() };
+        assert!(
+            head.is_empty() && tail.is_empty(),
+            "id_to_index not aligned"
+        );
 
-        let mut lengths = vec![];
+        let id_to_index: Vec<_> = id_to_index.iter().map(|&id| id as usize).collect();
+        let id_to_index = Arc::from(id_to_index);
+
         let length_bytes = unsafe { Mmap::map(&File::open(index_dir.join("index.lengths"))?)? };
-        for chunk in length_bytes.chunks_exact(U32_SIZE) {
-            let mut length = [0; U32_SIZE];
-            length.copy_from_slice(chunk);
-            lengths.push(u32::from_le_bytes(length));
-        }
+        let (head, lengths, tail) = unsafe { length_bytes.align_to::<u32>() };
+        assert!(head.is_empty() && tail.is_empty(), "lengths not aligned");
+
+        let lengths = lengths.to_vec();
         let total_length: u32 = lengths.iter().sum();
         let avg_length = total_length as f32 / lengths.len().max(1) as f32;
+        let lengths = Arc::from(lengths);
 
         Ok(Self {
             data,
-            index,
+            keywords,
+            inv_lists,
             avg_length,
-            offsets: offsets.into(),
-            lengths: lengths.into(),
-            list_lengths: list_lengths.into(),
-            id_to_index: id_to_index.into(),
+            keyword_offsets,
+            inv_list_offsets,
+            id_to_index,
+            lengths,
             sub_index: None,
         })
     }

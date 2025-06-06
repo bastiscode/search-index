@@ -29,7 +29,7 @@ impl IndexIter {
         slf
     }
 
-    pub fn __next__(&mut self) -> Option<String> {
+    pub fn __next__(&mut self) -> Option<Vec<String>> {
         let id = if let Some(sub_index) = self.sub_index.as_ref() {
             if self.index >= sub_index.len() {
                 return None;
@@ -42,7 +42,7 @@ impl IndexIter {
             self.index
         };
         self.index += 1;
-        self.data.get_row(id).map(|s| s.to_string())
+        self.data.get_row(id)
     }
 }
 

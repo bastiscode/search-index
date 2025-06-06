@@ -28,21 +28,11 @@ impl Mapping {
         mapping_file: &str,
         identifier_column: usize,
     ) -> anyhow::Result<()> {
-        let mut permutation = Vec::with_capacity(data.len());
-        let mut identifiers = Vec::with_capacity(data.len());
-        for i in 0..data.len() {
-            let identifier = data
-                .get_val(i, identifier_column)
-                .ok_or_else(|| anyhow!("identifier column out of bounds"))?;
-            identifiers.push(identifier);
-            permutation.push(i);
-        }
-
         let mut mapping_file = BufWriter::new(File::create(mapping_file)?);
         let identifier_bytes = u64::try_from(identifier_column)?.to_le_bytes();
         mapping_file.write_all(&identifier_bytes)?;
 
-        for index in permutation.into_iter().sorted_by_key(|&i| identifiers[i]) {
+        for index in (0..data.len()).sorted_by_key(|&i| data.get_val(i, identifier_column)) {
             let index_bytes = u64::try_from(index)?.to_le_bytes();
             mapping_file.write_all(&index_bytes)?;
         }
@@ -87,12 +77,38 @@ impl Mapping {
             let mid_identifier = self
                 .data
                 .get_val(self.permutation[mid], self.identifier_column)?;
-            match mid_identifier.cmp(identifier) {
+            match mid_identifier.as_str().cmp(identifier) {
                 Ordering::Less => lower = mid + 1,
                 Ordering::Equal => return Some(self.permutation[mid]),
                 Ordering::Greater => upper = mid,
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::env::temp_dir;
+
+    use super::*;
+
+    #[test]
+    fn test_mapping() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let data = IndexData::new(&format!("{dir}/test.tsv")).expect("Failed to load data");
+
+        let temp_dir = temp_dir();
+        let temp_file = temp_dir.join("mapping.bin");
+        Mapping::build(data.clone(), temp_file.to_str().unwrap(), 3)
+            .expect("Failed to build mapping");
+
+        let mapping = Mapping::load(data.clone(), temp_file.to_str().unwrap())
+            .expect("Failed to load mapping");
+
+        let id = mapping
+            .get("<http://www.wikidata.org/entity/Q76>")
+            .expect("Failed to find mapping");
+        assert_eq!(data.get_val(id, 0), Some("Barack Obama".to_string()));
     }
 }

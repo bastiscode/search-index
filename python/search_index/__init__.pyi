@@ -10,23 +10,6 @@ def normalize(s: str) -> str:
     """
     pass
 
-def ped(prefix: str, string: str, delta: int | None = None) -> int:
-    """
-
-    Computes the prefix edit distance between the given prefix and string
-    using the given delta.
-
-    """
-    pass
-
-def ied(infix: str, string: str) -> tuple[int, int]:
-    """
-
-    Computes the infix edit distance between the given infix and string.
-
-    """
-    pass
-
 class IndexData:
     """
 
@@ -57,7 +40,7 @@ class IndexData:
         """
         pass
 
-    def __iter__(self) -> Iterator[str]:
+    def __iter__(self) -> Iterator[list[str]]:
         """
 
         Returns an iterator over the rows.
@@ -65,7 +48,7 @@ class IndexData:
         """
         pass
 
-    def get_row(self, idx: int) -> str | None:
+    def get_row(self, idx: int) -> list[str] | None:
         """
 
         Returns the row at the given index.
@@ -99,48 +82,6 @@ class Mapping:
         """
 
         Returns the index for the given identifier.
-
-        """
-        pass
-
-class QGramIndex(SearchIndex):
-    """
-
-    A q-gram index for fuzzy prefix or infix search.
-
-    """
-
-    @property
-    def q(self) -> int:
-        """
-
-        The q in q-grams.
-
-        """
-        pass
-
-    @property
-    def distance(self) -> str:
-        """
-
-        The distance function used.
-
-        """
-        pass
-
-    @staticmethod
-    def build(
-        data_file: str,
-        index_dir: str,
-        q: int = 3,
-        distance: str = "ied",
-        use_synonyms: bool = True,
-        **kwargs: Any,
-    ) -> None:
-        """
-
-        Builds the index from the given file and saves
-        it in the index dir.
 
         """
         pass

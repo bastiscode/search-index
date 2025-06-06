@@ -28,8 +28,10 @@ pub struct PrefixIndex {
     #[pyo3(get)]
     data: IndexData,
     keywords: Arc<Mmap>,
+    names: Arc<Mmap>,
     inv_lists: Arc<Mmap>,
     keyword_offsets: Arc<[usize]>,
+    name_offsets: Arc<[usize]>,
     inv_list_offsets: Arc<[usize]>,
     lengths: Arc<[u32]>,
     avg_length: f32,
@@ -90,20 +92,13 @@ impl PrefixIndex {
 
     #[inline]
     fn get_name_or_synonym(&self, id: usize) -> Option<&str> {
-        let index = self.get_index(id)?;
-        let Some((name_id, true)) = lower_bound(0, self.id_to_index.len(), |i| {
-            self.id_to_index[i].cmp(&index)
-        }) else {
-            return None;
-        };
-        assert!(name_id <= id);
-        if name_id == id {
-            return self.data.get_val(index, 0);
-        }
-        // check synonyms
-        let synonyms = self.data.get_val(index, 2)?;
-        let offset = id - name_id - 1;
-        synonyms.split(";;;").nth(offset)
+        let start = self.name_offsets.get(id).copied()?;
+        let end = self
+            .name_offsets
+            .get(id + 1)
+            .copied()
+            .unwrap_or_else(|| self.names.len());
+        Some(unsafe { std::str::from_utf8_unchecked(&self.names[start..end]) })
     }
 
     #[inline]
@@ -173,12 +168,26 @@ impl PrefixIndex {
         unsafe { std::str::from_utf8_unchecked(&self.keywords[start..end]) }
     }
 
-    fn size(&self) -> usize {
+    fn num_keywords(&self) -> usize {
         self.keyword_offsets.len()
     }
 
+    pub fn len(&self) -> usize {
+        if let Some(sub_index) = self.sub_index.as_ref() {
+            sub_index.len()
+        } else {
+            self.data.len()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn get_word_id(&self, word: &str) -> Option<usize> {
-        match lower_bound(0, self.size(), |word_id| self.get_word(word_id).cmp(word)) {
+        match lower_bound(0, self.num_keywords(), |word_id| {
+            self.get_word(word_id).cmp(word)
+        }) {
             Some((word_id, true)) => Some(word_id),
             _ => None,
         }
@@ -187,23 +196,24 @@ impl PrefixIndex {
     fn get_matches(&self, prefix: &str) -> (Option<WordItemMatches>, Vec<WordItemMatches>) {
         let mut exact_matches = None;
         let mut prefix_matches = vec![];
-        let lower_id =
-            match lower_bound(0, self.size(), |word_id| self.get_word(word_id).cmp(prefix)) {
-                None => return (exact_matches, prefix_matches),
-                Some((word_id, true)) => {
-                    exact_matches = Some(WordItemMatches {
-                        word_id,
-                        matches: self.parse_inverted_list(word_id),
-                    });
-                    word_id.saturating_add(1)
-                }
-                Some((word_id, false)) => word_id,
-            };
+        let lower_id = match lower_bound(0, self.num_keywords(), |word_id| {
+            self.get_word(word_id).cmp(prefix)
+        }) {
+            None => return (exact_matches, prefix_matches),
+            Some((word_id, true)) => {
+                exact_matches = Some(WordItemMatches {
+                    word_id,
+                    matches: self.parse_inverted_list(word_id),
+                });
+                word_id.saturating_add(1)
+            }
+            Some((word_id, false)) => word_id,
+        };
 
-        let upper_id = upper_bound(lower_id, self.size(), |word_id| {
+        let upper_id = upper_bound(lower_id, self.num_keywords(), |word_id| {
             Self::prefix_cmp(self.get_word(word_id), prefix)
         })
-        .unwrap_or_else(|| self.size());
+        .unwrap_or_else(|| self.num_keywords());
 
         prefix_matches.extend((lower_id..upper_id).map(|word_id| WordItemMatches {
             word_id,
@@ -267,24 +277,19 @@ impl PrefixIndex {
         let mut lengths = vec![];
         let mut id_to_index_file =
             BufWriter::new(File::create(index_dir.join("index.id-to-index"))?);
+        let mut name_file = BufWriter::new(File::create(index_dir.join("index.names"))?);
+        let mut name_offset = 0;
+        let mut name_offsets = BufWriter::new(File::create(index_dir.join("index.name-offsets"))?);
         let mut lengths_file = BufWriter::new(File::create(index_dir.join("index.lengths"))?);
         let mut id = 0;
         for (i, row) in data.iter().enumerate() {
-            let mut split = row.split('\t');
-            let name = normalize(
-                split
-                    .next()
-                    .ok_or_else(|| anyhow!("name not found in row {i}: {row}"))?,
-            );
+            if row.len() != 5 {
+                return Err(anyhow!("expected 5 columns in row {i}, got {}", row.len()));
+            }
+            let name = normalize(&row[0]);
             let mut names = vec![name];
             if use_synonyms {
-                names.extend(
-                    split
-                        .nth(1)
-                        .ok_or_else(|| anyhow!("synonyms not found in row {i}: {row}"))?
-                        .split(";;;")
-                        .map(normalize),
-                );
+                names.extend(row[2].split(";;;").map(normalize));
             }
             let index_bytes = u32::try_from(i)?.to_le_bytes();
             for name in names {
@@ -301,6 +306,10 @@ impl PrefixIndex {
                 lengths.push(length);
                 id_to_index_file.write_all(&index_bytes)?;
                 lengths_file.write_all(&length.to_le_bytes())?;
+                name_file.write_all(name.as_bytes())?;
+                let name_offset_bytes = u64::try_from(name_offset)?.to_le_bytes();
+                name_offsets.write_all(&name_offset_bytes)?;
+                name_offset += name.len();
             }
         }
 
@@ -337,6 +346,15 @@ impl PrefixIndex {
             Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.keywords"))?)? });
         let inv_lists =
             Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.inv-lists"))?)? });
+        let names = Arc::new(unsafe { Mmap::map(&File::open(index_dir.join("index.names"))?)? });
+        let name_offsets_bytes =
+            unsafe { Mmap::map(&File::open(index_dir.join("index.name-offsets"))?)? };
+        let (head, name_offsets, tail) = unsafe { name_offsets_bytes.align_to::<u64>() };
+        assert!(
+            head.is_empty() && tail.is_empty(),
+            "name_offsets not aligned"
+        );
+        let name_offsets = Arc::from(name_offsets.iter().map(|o| *o as usize).collect::<Vec<_>>());
 
         let mut keyword_offsets = vec![];
         let mut inv_list_offsets = vec![];
@@ -375,9 +393,11 @@ impl PrefixIndex {
         Ok(Self {
             data,
             keywords,
+            names,
             inv_lists,
             avg_length,
             keyword_offsets,
+            name_offsets,
             inv_list_offsets,
             id_to_index,
             lengths,
@@ -388,8 +408,8 @@ impl PrefixIndex {
     #[pyo3(signature = (
         query,
         score = Score::Occurrence,
-        k = 1.5,
-        b = 0.75,
+        _k = 1.5,
+        _b = 0.75,
         min_keyword_length = None,
         no_refinement = false
     ))]
@@ -397,8 +417,8 @@ impl PrefixIndex {
         &self,
         query: &str,
         score: Score,
-        k: f32,
-        b: f32,
+        _k: f32,
+        _b: f32,
         min_keyword_length: Option<usize>,
         no_refinement: bool,
     ) -> anyhow::Result<Vec<(usize, f32)>> {
@@ -452,10 +472,8 @@ impl PrefixIndex {
                 let Some(name) = self.get_name_or_synonym(*id) else {
                     continue;
                 };
-                let name_norm = normalize(name);
                 let words: HashMap<_, _> =
-                    name_norm
-                        .split_whitespace()
+                    name.split_whitespace()
                         .fold(HashMap::new(), |mut map, word| {
                             map.entry(word).and_modify(|freq| *freq += 1).or_insert(1);
                             map
@@ -542,15 +560,17 @@ impl PrefixIndex {
         "prefix"
     }
 
-    pub fn get_name(&self, id: usize) -> anyhow::Result<&str> {
-        self.data.get_val(id, 0).ok_or_else(|| anyhow!("inalid id"))
+    pub fn get_name(&self, id: usize) -> anyhow::Result<String> {
+        self.data
+            .get_val(id, 0)
+            .ok_or_else(|| anyhow!("invalid id"))
     }
 
-    pub fn get_row(&self, id: usize) -> anyhow::Result<&str> {
+    pub fn get_row(&self, id: usize) -> anyhow::Result<Vec<String>> {
         self.data.get_row(id).ok_or_else(|| anyhow!("invalid id"))
     }
 
-    pub fn get_val(&self, id: usize, column: usize) -> anyhow::Result<&str> {
+    pub fn get_val(&self, id: usize, column: usize) -> anyhow::Result<String> {
         self.data
             .get_val(id, column)
             .ok_or_else(|| anyhow!("invalid id or column"))
@@ -570,12 +590,117 @@ impl PrefixIndex {
     }
 
     pub fn __len__(&self) -> usize {
-        self.sub_index
-            .as_ref()
-            .map_or(self.data.len(), |sub_index| sub_index.len())
+        self.len()
     }
 
     pub fn __iter__(&self) -> IndexIter {
         IndexIter::new(self.data.clone(), self.sub_index.clone())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::env::temp_dir;
+
+    use super::*;
+
+    #[test]
+    fn test_prefix_index() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+
+        let data_file = format!("{dir}/test.tsv");
+        let temp_dir = temp_dir();
+
+        PrefixIndex::build(&data_file, temp_dir.to_str().unwrap(), true)
+            .expect("Failed to build index");
+
+        let index = PrefixIndex::load(&data_file, temp_dir.to_str().unwrap())
+            .expect("Failed to load index");
+
+        let matches = index
+            .find_matches("United States", Score::Occurrence, 1.5, 0.75, None, false)
+            .expect("Failed to find matches");
+
+        assert_eq!(matches[0], (0, 2.0));
+
+        // partial match
+        let matches = index
+            .find_matches("United State", Score::Occurrence, 1.5, 0.75, None, false)
+            .expect("Failed to find matches");
+
+        assert_eq!(matches[0], (0, 1.75));
+
+        // now with synonym
+        let matches = index
+            .find_matches("the U.S. of A", Score::Occurrence, 1.5, 0.75, None, false)
+            .expect("Failed to find matches");
+
+        assert_eq!(matches[0], (0, 4.0));
+
+        // now with too high min_keyword_length
+        let matches = index
+            .find_matches(
+                "the U.S. of A",
+                Score::Occurrence,
+                1.5,
+                0.75,
+                Some(4),
+                false,
+            )
+            .expect("Failed to find matches");
+
+        assert!(matches.is_empty());
+
+        // now with min_keyword_length
+        let matches = index
+            .find_matches(
+                "the U.S. of A",
+                Score::Occurrence,
+                1.5,
+                0.75,
+                Some(3),
+                false,
+            )
+            .expect("Failed to find matches");
+
+        assert_eq!(matches[0], (0, 4.0));
+
+        // now with partially matching query
+        let matches = index
+            .find_matches(
+                "the U.S. of B",
+                Score::Occurrence,
+                1.5,
+                0.75,
+                Some(3),
+                false,
+            )
+            .expect("Failed to find matches");
+
+        // 3 exact matches, 1 keyword unmatched, 1 word unmatched
+        assert_eq!(matches[0], (0, 3.0 - 0.5 - 0.25));
+
+        // now with duplicate query keywords
+        let matches = index
+            .find_matches(
+                "the U.S. of A the U.S. of A",
+                Score::Occurrence,
+                1.5,
+                0.75,
+                None,
+                false,
+            )
+            .expect("Failed to find matches");
+
+        assert_eq!(matches[0], (0, 8.0));
+
+        // now exclude with sub index
+        let matches = index
+            .sub_index_by_ids((1..index.data.len()).collect())
+            .expect("Failed to create sub index")
+            .find_matches("the U.S. of A", Score::Occurrence, 1.5, 0.75, None, false)
+            .expect("Failed to find matches");
+
+        assert!(matches.iter().all(|(id, _)| *id != 0));
     }
 }

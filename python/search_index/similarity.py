@@ -8,7 +8,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm, trange
 
-from search_index import SearchIndex, normalize
+from search_index import SearchIndex
 from search_index._internal import IndexData
 
 
@@ -100,7 +100,7 @@ class EmbeddingModel:
             disable=not show_progress,
         ):
             batch = sorted_texts[i : i + batch_size]
-            embeddings = self.encoder.encode(
+            embeddings = self.encoder.encode(  # type: ignore
                 batch,
                 normalize_embeddings=True,
                 batch_size=len(batch),
@@ -160,18 +160,20 @@ class SimilarityIndex(SearchIndex):
         """
         data = IndexData(data_file)
 
-        def data_iter(indices: Iterable[int] | None = None) -> tuple[int, list[str]]:
+        def data_iter(
+            indices: Iterable[int] | None = None,
+        ) -> Iterator[tuple[int, list[str]]]:
             if indices is None:
                 indices = range(len(data))
 
             for i in indices:
-                split = data.get_row(i).split("\t")
-                text = [normalize(split[0])]
+                row = data.get_row(i)
+                text = [row[0]]
 
                 if use_synonyms:
-                    for synonym in split[2].split(";;;"):
+                    for synonym in row[2].split(";;;"):
                         if synonym:
-                            text.append(normalize(synonym))
+                            text.append(synonym)
 
                 if not use_columns:
                     yield i, text
@@ -182,9 +184,9 @@ class SimilarityIndex(SearchIndex):
                         "column index must be greater than 2, because "
                         "0, 1, and 2 are reserved for name, score, and synonyms"
                     )
-                    assert col < len(split), f"column {col} out of range"
-                    if split[col]:
-                        text.append(normalize(split[col]))
+                    assert col < len(row), f"column {col} out of range"
+                    if row[col]:
+                        text.append(row[col])
 
                 yield i, text
 
@@ -353,9 +355,9 @@ class SimilarityIndex(SearchIndex):
 
         is_ivf = "IVF" in self.index_name
         is_binary = self.index_name.startswith("B")
-        assert is_binary == (
-            self.model.precision == "ubinary"
-        ), "Model and index mismatch"
+        assert is_binary == (self.model.precision == "ubinary"), (
+            "Model and index mismatch"
+        )
 
         search_kwargs = {}
         if is_binary:
@@ -458,7 +460,7 @@ class SimilarityIndex(SearchIndex):
         else:
             return len(self.data)
 
-    def __iter__(self) -> Iterator[str]:
+    def __iter__(self) -> Iterator[list[str]]:
         """
 
         Iterates over the index data.

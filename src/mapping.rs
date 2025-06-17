@@ -32,7 +32,14 @@ impl Mapping {
         let identifier_bytes = u64::try_from(identifier_column)?.to_le_bytes();
         mapping_file.write_all(&identifier_bytes)?;
 
-        for index in (0..data.len()).sorted_by_key(|&i| data.get_val(i, identifier_column)) {
+        let identifiers: Vec<_> = (0..data.len())
+            .map(|i| {
+                data.get_val(i, identifier_column)
+                    .ok_or_else(|| anyhow!("missing identifier at index {i}"))
+            })
+            .collect::<anyhow::Result<_>>()?;
+
+        for index in (0..data.len()).sorted_by_key(|&i| identifiers[i].as_str()) {
             let index_bytes = u64::try_from(index)?.to_le_bytes();
             mapping_file.write_all(&index_bytes)?;
         }

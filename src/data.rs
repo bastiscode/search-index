@@ -35,9 +35,14 @@ impl IndexData {
         let mut offset = lines.next().map(|line| line.len() + 1).unwrap_or(0);
         for line in lines {
             // check that line is valid utf8
-            if let Err(e) = std::str::from_utf8(line) {
-                return Err(anyhow!("found invalid utf8: {}", e));
-            };
+            let line =
+                std::str::from_utf8(line).map_err(|e| anyhow!("found invalid utf8: {}", e))?;
+            if line.split('\t').count() != 5 {
+                return Err(anyhow!(
+                    "invalid line format, expected 5 tab-separated columns per line: {}",
+                    line
+                ));
+            }
             offsets.push(offset);
             offset += line.len() + 1;
         }

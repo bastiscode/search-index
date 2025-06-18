@@ -1,5 +1,7 @@
 from typing import Any, Iterator
 
+from search_index import IndexData
+
 
 class SearchIndex:
     """
@@ -9,27 +11,20 @@ class SearchIndex:
     """
 
     @staticmethod
-    def build(data_file: str, index_dir: str, **kwargs: Any) -> None:
+    def build(data: IndexData, index_dir: str, **kwargs: Any) -> None:
         """
 
-        Builds the index from the given file and saves
+        Builds the index from the given data and saves
         it in the index dir.
 
-        The file should contain one record per line, in the following format:
-            name\tscore\tsynonyms\tinfo1\tinfo2\t...
-
-        Synonyms are expected to be separated by three semicolons.
-
-        An example line:
-            Albert Einstein\t275\tEinstein;;;A. Einstein\tGerman physicist\t
         """
         ...
 
     @staticmethod
-    def load(data_file: str, index_dir: str, **kwargs: Any) -> "SearchIndex":
+    def load(data: IndexData, index_dir: str, **kwargs: Any) -> "SearchIndex":
         """
 
-        Loads the index from the given data file and index directory.
+        Loads the index with the given data and index directory.
 
         """
         ...

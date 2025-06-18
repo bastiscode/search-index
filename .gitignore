@@ -141,4 +141,6 @@ dmypy.json
 
 /python/search_index/_internal*.so
 /benches/data.tsv
+/benches/data.offsets
+/benches/mapping.bin
 /benches/index

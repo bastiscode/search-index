@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::anyhow;
-use itertools::Itertools;
 use memmap2::Mmap;
 use pyo3::prelude::*;
 
@@ -32,14 +31,20 @@ impl Mapping {
         let identifier_bytes = u64::try_from(identifier_column)?.to_le_bytes();
         mapping_file.write_all(&identifier_bytes)?;
 
-        let identifiers: Vec<_> = (0..data.len())
-            .map(|i| {
-                data.get_val(i, identifier_column)
-                    .ok_or_else(|| anyhow!("missing identifier at index {i}"))
-            })
-            .collect::<anyhow::Result<_>>()?;
+        let mut permutation = Vec::with_capacity(data.len());
+        let mut identifiers = Vec::with_capacity(data.len());
+        for index in 0..data.len() {
+            if let Some(identifier) = data.get_val(index, identifier_column) {
+                identifiers.push(identifier);
+                permutation.push(index);
+            } else {
+                return Err(anyhow!("missing identifier at index {}", index));
+            }
+        }
 
-        for index in (0..data.len()).sorted_by_key(|&i| identifiers[i].as_str()) {
+        permutation.sort_by_key(|&i| identifiers[i]);
+
+        for index in permutation {
             let index_bytes = u64::try_from(index)?.to_le_bytes();
             mapping_file.write_all(&index_bytes)?;
         }
@@ -61,11 +66,7 @@ impl Mapping {
         );
         let identifier_column = u64::from_le_bytes(identifier_bytes) as usize;
         for index_bytes in chunks {
-            let index = u64::from_le_bytes(
-                index_bytes
-                    .try_into()
-                    .map_err(|_| anyhow!("invalid index in mapping"))?,
-            ) as usize;
+            let index = u64::from_le_bytes(index_bytes.try_into()?) as usize;
             permutation.push(index);
         }
 
@@ -84,7 +85,7 @@ impl Mapping {
             let mid_identifier = self
                 .data
                 .get_val(self.permutation[mid], self.identifier_column)?;
-            match mid_identifier.as_str().cmp(identifier) {
+            match mid_identifier.cmp(identifier) {
                 Ordering::Less => lower = mid + 1,
                 Ordering::Equal => return Some(self.permutation[mid]),
                 Ordering::Greater => upper = mid,
@@ -96,17 +97,28 @@ impl Mapping {
 
 #[cfg(test)]
 mod test {
-    use std::env::temp_dir;
+
+    use tempfile::tempdir;
 
     use super::*;
 
     #[test]
     fn test_mapping() {
         let dir = env!("CARGO_MANIFEST_DIR");
-        let data = IndexData::new(&format!("{dir}/test.tsv")).expect("Failed to load data");
+        let data_file = format!("{dir}/test.tsv");
 
-        let temp_dir = temp_dir();
-        let temp_file = temp_dir.join("mapping.bin");
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let offset_file = temp_dir
+            .path()
+            .join("test.offsets")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        IndexData::build(&data_file, &offset_file).expect("Failed to build index data");
+        let data = IndexData::load(&data_file, &offset_file).expect("Failed to load index data");
+
+        let temp_file = temp_dir.path().join("mapping.bin");
         Mapping::build(data.clone(), temp_file.to_str().unwrap(), 3)
             .expect("Failed to build mapping");
 
@@ -116,6 +128,6 @@ mod test {
         let id = mapping
             .get("<http://www.wikidata.org/entity/Q76>")
             .expect("Failed to find mapping");
-        assert_eq!(data.get_val(id, 0), Some("Barack Obama".to_string()));
+        assert_eq!(data.get_val(id, 0), Some("Barack Obama"));
     }
 }

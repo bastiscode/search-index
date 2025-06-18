@@ -133,7 +133,7 @@ class SimilarityIndex(SearchIndex):
 
     @staticmethod
     def build(
-        data_file: str,
+        data: IndexData,
         index_dir: str,
         use_synonyms: bool = True,
         use_columns: tuple[int, ...] | None = None,
@@ -158,7 +158,6 @@ class SimilarityIndex(SearchIndex):
         An example line:
             Albert Einstein\t275\tEinstein;;;A. Einstein\tGerman physicist\t
         """
-        data = IndexData(data_file)
 
         def data_iter(
             indices: Iterable[int] | None = None,
@@ -306,14 +305,16 @@ class SimilarityIndex(SearchIndex):
             )
 
     @staticmethod
-    def load(data_file: str, index_dir: str, device: str = "cuda") -> "SimilarityIndex":
+    def load(
+        data: IndexData,
+        index_dir: str,
+        device: str = "cuda",
+    ) -> "SimilarityIndex":
         """
 
         Loads the index from the given data file and index directory.
 
         """
-        data = IndexData(data_file)
-
         with open(os.path.join(index_dir, "config.json")) as f:
             config = json.load(f)
 

@@ -16,10 +16,21 @@ class IndexData:
     Data for a search index.
 
     """
-    def __init__(self, file: str) -> None:
+    @staticmethod
+    def build(data_file: str, offset_file: str) -> None:
         """
 
-        Initializes the data from the given file.
+        Builds the index data from the given data and saves line
+        offsets in the offset file.
+
+        """
+        pass
+
+    @staticmethod
+    def load(data_file: str, offset_file: str) -> "IndexData":
+        """
+
+        Loads the data from the given data and offset file.
 
         """
         pass
@@ -94,7 +105,7 @@ class PrefixIndex(SearchIndex):
     """
     @staticmethod
     def build(
-        data_file: str,
+        data: IndexData,
         index_dir: str,
         use_synonyms: bool = True,
         **kwargs: Any,

@@ -269,10 +269,9 @@ impl<'py> IntoPyObject<'py> for Score {
 impl PrefixIndex {
     // implement functions from pyi interface
     #[staticmethod]
-    #[pyo3(signature = (data_file, index_dir, use_synonyms = true))]
-    pub fn build(data_file: &str, index_dir: &str, use_synonyms: bool) -> anyhow::Result<()> {
+    #[pyo3(signature = (data, index_dir, use_synonyms = true))]
+    pub fn build(data: IndexData, index_dir: &str, use_synonyms: bool) -> anyhow::Result<()> {
         let index_dir = Path::new(index_dir);
-        let data = IndexData::new(data_file)?;
         let mut inv_lists: HashMap<String, Vec<u32>> = HashMap::new();
         let mut lengths = vec![];
         let mut id_to_index_file =
@@ -286,7 +285,7 @@ impl PrefixIndex {
             if row.len() != 5 {
                 return Err(anyhow!("expected 5 columns in row {i}, got {}", row.len()));
             }
-            let name = normalize(&row[0]);
+            let name = normalize(row[0]);
             let mut names = vec![name];
             if use_synonyms {
                 names.extend(row[2].split(";;;").map(normalize));
@@ -338,8 +337,7 @@ impl PrefixIndex {
     }
 
     #[staticmethod]
-    pub fn load(data_file: &str, index_dir: &str) -> anyhow::Result<Self> {
-        let data = IndexData::new(data_file)?;
+    pub fn load(data: IndexData, index_dir: &str) -> anyhow::Result<Self> {
         let index_dir = Path::new(index_dir);
 
         let keywords =
@@ -562,17 +560,17 @@ impl PrefixIndex {
 
     pub fn get_name(&self, id: usize) -> anyhow::Result<String> {
         self.data
-            .get_val(id, 0)
+            ._get_val(id, 0)
             .ok_or_else(|| anyhow!("invalid id"))
     }
 
     pub fn get_row(&self, id: usize) -> anyhow::Result<Vec<String>> {
-        self.data.get_row(id).ok_or_else(|| anyhow!("invalid id"))
+        self.data._get_row(id).ok_or_else(|| anyhow!("invalid id"))
     }
 
     pub fn get_val(&self, id: usize, column: usize) -> anyhow::Result<String> {
         self.data
-            .get_val(id, column)
+            ._get_val(id, column)
             .ok_or_else(|| anyhow!("invalid id or column"))
     }
 
@@ -600,7 +598,10 @@ impl PrefixIndex {
 
 #[cfg(test)]
 mod test {
-    use std::env::temp_dir;
+
+    use std::fs::create_dir_all;
+
+    use tempfile::tempdir;
 
     use super::*;
 
@@ -609,13 +610,29 @@ mod test {
         let dir = env!("CARGO_MANIFEST_DIR");
 
         let data_file = format!("{dir}/test.tsv");
-        let temp_dir = temp_dir();
+        let temp_dir = tempdir().expect("Failed to create temp dir");
 
-        PrefixIndex::build(&data_file, temp_dir.to_str().unwrap(), true)
-            .expect("Failed to build index");
+        let offsets_file = temp_dir
+            .path()
+            .join("test.offsets")
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
 
-        let index = PrefixIndex::load(&data_file, temp_dir.to_str().unwrap())
-            .expect("Failed to load index");
+        IndexData::build(&data_file, &offsets_file).expect("Failed to build index data");
+        let data = IndexData::load(&data_file, &offsets_file).expect("Failed to load index data");
+
+        let index_dir = temp_dir.path().join("index");
+        create_dir_all(&index_dir).expect("Failed to create index directory");
+        let index_dir = index_dir
+            .as_os_str()
+            .to_str()
+            .expect("Invalid index directory path");
+
+        PrefixIndex::build(data.clone(), index_dir, true).expect("Failed to build index");
+
+        let index = PrefixIndex::load(data, index_dir).expect("Failed to load index");
 
         let matches = index
             .find_matches("United States", Score::Occurrence, 1.5, 0.75, None, false)

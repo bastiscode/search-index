@@ -42,7 +42,7 @@ impl IndexIter {
             self.index
         };
         self.index += 1;
-        self.data.get_row(id)
+        self.data._get_row(id)
     }
 }
 

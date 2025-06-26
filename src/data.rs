@@ -116,7 +116,7 @@ impl IndexData {
             .offsets
             .get(idx + 1)
             .copied()
-            .unwrap_or(self.inner.mmap.len());
+            .map_or_else(|| self.inner.mmap.len(), |o| o - 1);
 
         let row = unsafe { std::str::from_utf8_unchecked(&self.inner.mmap[start..end]) };
         Some(row.split('\t').collect())

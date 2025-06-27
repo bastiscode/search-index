@@ -1,6 +1,7 @@
 import argparse
+import os
 
-from search_index import PrefixIndex, QGramIndex, SimilarityIndex
+from search_index import IndexData, PrefixIndex, SimilarityIndex
 
 
 def parse_args():
@@ -11,23 +12,10 @@ def parse_args():
         "--type",
         type=str,
         default="prefix",
-        choices=["prefix", "qgram", "similarity"],
+        choices=["prefix", "similarity"],
         help="Index type",
     )
     parser.add_argument("--no-synonyms", action="store_true", help="Disable synonyms")
-    parser.add_argument(
-        "--qgram-q",
-        type=int,
-        default=3,
-        help="Q in q-grams for q-gram index",
-    )
-    parser.add_argument(
-        "--qgram-distance",
-        type=str,
-        choices=["ied", "ped"],
-        default="ied",
-        help="Distance function for q-gram index",
-    )
     parser.add_argument(
         "--sim-model",
         type=str,
@@ -65,23 +53,22 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.type == "qgram":
-        QGramIndex.build(
-            args.input_file,
-            args.index_dir,
-            q=args.qgram_q,
-            distance=args.qgram_distance,
-            use_synonyms=not args.no_synonyms,
-        )
-    elif args.type == "prefix":
+
+    os.makedirs(args.index_dir, exist_ok=True)
+    # Build the index data
+    offsets_file = os.path.join(args.index_dir, "data.offsets")
+    IndexData.build(args.input_file, offsets_file)
+    data = IndexData.load(args.input_file, offsets_file)
+
+    if args.type == "prefix":
         PrefixIndex.build(
-            args.input_file,
+            data,
             args.index_dir,
             use_synonyms=not args.no_synonyms,
         )
     else:
         SimilarityIndex.build(
-            args.input_file,
+            data,
             args.index_dir,
             precision=args.sim_precision,
             batch_size=args.sim_batch_size,

@@ -1,10 +1,8 @@
 import argparse
-import logging
+import os
 import time
 
-from search_index import PrefixIndex, QGramIndex, SimilarityIndex
-
-logging.basicConfig(level=logging.DEBUG)
+from search_index import IndexData, PrefixIndex, SimilarityIndex
 
 
 def parse_args():
@@ -42,14 +40,14 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+    data = IndexData.load(args.input_file, os.path.join(args.index_dir, "data.offsets"))
+
     kwargs = {}
-    if args.type == "qgram":
-        idx = QGramIndex.load(args.input_file, args.index_dir)
-    elif args.type == "prefix":
-        idx = PrefixIndex.load(args.input_file, args.index_dir)
+    if args.type == "prefix":
+        idx = PrefixIndex.load(data, args.index_dir)
         kwargs["score"] = args.prefix_score
     else:
-        idx = SimilarityIndex.load(args.input_file, args.index_dir)
+        idx = SimilarityIndex.load(data, args.index_dir)
         kwargs["nprobe"] = args.sim_nprobe
 
     print(f"Loaded index with {len(idx):,} records.")

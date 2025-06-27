@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import random
 from typing import Iterable, Iterator
@@ -39,7 +40,8 @@ def select_faiss_binary_index(d: int, n: int) -> tuple[str, faiss.IndexBinary]:
     Selects the appropriate Faiss binary index for the given number of datapoints.
 
     """
-    if n < 1_000_000:
+    # remove True here once search parameters for IVF binary indices are implemented
+    if True or n < 1_000_000:
         return "BFlat", faiss.IndexBinaryIDMap2(faiss.index_binary_factory(d, "BFlat"))
 
     n_clusters = round(4 * n**0.5)
@@ -158,6 +160,7 @@ class SimilarityIndex(SearchIndex):
         An example line:
             Albert Einstein\t275\tEinstein;;;A. Einstein\tGerman physicist\t
         """
+        logger = logging.getLogger("SIMILARITY INDEX BUILD")
 
         def data_iter(
             indices: Iterable[int] | None = None,
@@ -211,7 +214,7 @@ class SimilarityIndex(SearchIndex):
             index_name, index = select_faiss_binary_index(emb_model.dim, index_size)
 
         if show_progress:
-            print(
+            logger.info(
                 f"Building a {index_name} index for {len(data):,} records "
                 f"with a total of {index_size:,} entries"
             )
@@ -220,7 +223,7 @@ class SimilarityIndex(SearchIndex):
         if "IVF" in index_name:
             if faiss.get_num_gpus() > 0 and train_on_gpu:
                 if show_progress:
-                    print(
+                    logger.info(
                         f"Setting up clustering index on {faiss.get_num_gpus()} GPUs "
                         "for training"
                     )
@@ -228,7 +231,7 @@ class SimilarityIndex(SearchIndex):
                     ci = faiss.index_cpu_to_all_gpus(faiss.IndexFlatIP(index.d))
                     index.clustering_index = ci
                 except Exception as e:
-                    print(f"Failed to move clustering index to GPUs: {e}")
+                    logger.error(f"Failed to move clustering index to GPUs: {e}")
 
             train_ids = []
             train_texts = []
@@ -255,7 +258,7 @@ class SimilarityIndex(SearchIndex):
             )
 
             if show_progress:
-                print(
+                logger.info(
                     f"Training {index_name} index with {index.nlist:,} clusters on "
                     f"{len(train_embeddings):,} embeddings from {data_samples:,} records"
                 )
@@ -331,7 +334,7 @@ class SimilarityIndex(SearchIndex):
     def find_matches(
         self,
         query: str,
-        k: int = 10,
+        k: int = 100,
         nprobe: int = 10,
         min_score: float | None = None,
     ) -> list[tuple[int, float]]:
@@ -361,23 +364,14 @@ class SimilarityIndex(SearchIndex):
         )
 
         search_kwargs = {}
-        if is_binary:
-            if is_ivf:
-                # ivf binary index
-                # does not support search params yet, so set nprobe directly
-                self.index.nprobe = nprobe
-
-            # selector not yet supported for binary indices, handled below
-            # in deduplication currently
+        if is_ivf:
+            # ivf float index
+            search_kwargs["params"] = faiss.SearchParametersIVF(
+                sel=selector, nprobe=nprobe
+            )
         else:
-            if is_ivf:
-                # ivf float index
-                search_kwargs["params"] = faiss.SearchParametersIVF(
-                    sel=selector, nprobe=nprobe
-                )
-            else:
-                # flat float index
-                search_kwargs["params"] = faiss.SearchParameters(sel=selector)
+            # flat float index
+            search_kwargs["params"] = faiss.SearchParameters(sel=selector)
 
         query_embeddings = self.model.embed([query])
         scores, indices = self.index.search(query_embeddings, k_scaled, **search_kwargs)
@@ -390,7 +384,7 @@ class SimilarityIndex(SearchIndex):
                 break
             elif index in seen:
                 continue
-            # this is required because binary indices do not support
+            # this is required because IVF binary indices do not support
             # ID selectors yet, so we might get indices outside the subset
             elif self.subset is not None and index not in self.subset:
                 continue

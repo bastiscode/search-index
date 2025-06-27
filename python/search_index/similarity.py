@@ -56,15 +56,13 @@ class EmbeddingModel:
     def __init__(
         self,
         model: str,
-        device: str,
         precision: str,
         embedding_dim: int | None = None,
+        device: str | None = None,
     ):
         assert precision in ["float32", "ubinary"], "invalid precision"
-        self.encoder = SentenceTransformer(
-            model,
-            device=device,
-        )
+        self.model = model
+        self.encoder = SentenceTransformer(model, device=device)
         self.precision = precision
         self.dim = self.encoder.get_sentence_embedding_dimension()
         assert self.dim is not None, "unable to get embedding dimension"
@@ -76,6 +74,18 @@ class EmbeddingModel:
             self._dim = self.dim // 8
         else:
             self._dim = self.dim
+
+    def same_as_config(
+        self,
+        model: str,
+        precision: str,
+        embedding_dim: int | None = None,
+    ) -> bool:
+        return (
+            self.model == model
+            and self.precision == precision
+            and (embedding_dim is None or self.dim == embedding_dim)
+        )
 
     def embed(
         self,
@@ -311,6 +321,7 @@ class SimilarityIndex(SearchIndex):
     def load(
         data: IndexData,
         index_dir: str,
+        model: EmbeddingModel | None = None,
         device: str = "cuda",
     ) -> "SimilarityIndex":
         """
@@ -328,7 +339,9 @@ class SimilarityIndex(SearchIndex):
             index = faiss.read_index_binary(index_file)
 
         index_name = config.pop("index_name")
-        model = EmbeddingModel(**config, device=device)
+        if model is None or not model.same_as_config(**config):
+            model = EmbeddingModel(**config, device=device)
+
         return SimilarityIndex(model, data, index, index_name)
 
     def find_matches(
@@ -395,6 +408,13 @@ class SimilarityIndex(SearchIndex):
                 break
 
             seen.add(index)
+
+            if is_binary:
+                # convert binary index score to [0, 1] range to more
+                # align with cosine-similarity for float indices
+                # (even though cosine-similarity can be [-1, 1])
+                score = (self.model.dim - score) / self.model.dim
+
             deduped.append((index, score))
 
         return deduped

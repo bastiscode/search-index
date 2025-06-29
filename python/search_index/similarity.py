@@ -60,7 +60,7 @@ class EmbeddingModel:
         embedding_dim: int | None = None,
         device: str | None = None,
     ):
-        assert precision in ["float32", "ubinary"], "invalid precision"
+        assert precision in ["float32", "ubinary"], f"invalid precision {precision}"
         self.model = model
         self.encoder = SentenceTransformer(model, device=device)
         self.precision = precision
@@ -216,7 +216,7 @@ class SimilarityIndex(SearchIndex):
             else:
                 model = "mixedbread-ai/mxbai-embed-2d-large-v1"
 
-        emb_model = EmbeddingModel(model, device, precision, embedding_dim)
+        emb_model = EmbeddingModel(model, precision, embedding_dim, device)
 
         if precision == "float32":
             index_name, index = select_faiss_index(emb_model.dim, index_size)

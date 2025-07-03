@@ -122,8 +122,6 @@ class PrefixIndex(SearchIndex):
         self,
         query: str,
         score: str = "occurrence",
-        k: float = 1.75,
-        b: float = 0.75,
         min_keyword_length: int | None = None,
         no_refinement: bool = False,
         **kwargs: Any,

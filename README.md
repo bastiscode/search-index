@@ -31,9 +31,6 @@ See `build.py` and `query.py` for examples on how to build and query an index.
 
 Prefix keyword index using either
     - keyword occurrence
-    - keyword count (not yet implemented)
-    - tf-idf (not yet implemented)
-    - bm25 (not yet implemented)
 
 Similarity index using either
     - brute force search

@@ -29,12 +29,14 @@ See `build.py` and `query.py` for examples on how to build and query an index.
 
 ## Search indices
 
-Prefix keyword index using either
-    - keyword occurrence
+Prefix keyword index with one of the following score functions:
 
-Similarity index using either
-    - brute force search
-    - inverted index search
-    - inverted index + HNSW search
+- keyword occurrence
 
-All search indices also support searching only in a subset of the indexed records.
+Similarity index with one of the following index types:
+
+- flat index (brute-force search)
+- inverted index (bucket search)
+- inverted index + HNSW
+
+Both search indices also support searching only in a subset of the indexed records.

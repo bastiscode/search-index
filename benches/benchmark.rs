@@ -106,14 +106,7 @@ fn bench_prefix_index(c: &mut Criterion) {
     g.bench_function("find_matches_1", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches(
-                    "the united states",
-                    Score::Occurrence,
-                    0.0,
-                    0.0,
-                    None,
-                    false,
-                )
+                .find_matches("the united states", Score::Occurrence, None, false)
                 .expect("Failed to find matches");
         })
     });
@@ -121,14 +114,7 @@ fn bench_prefix_index(c: &mut Criterion) {
     g.bench_function("find_matches_1_min_4", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches(
-                    "the united states",
-                    Score::Occurrence,
-                    0.0,
-                    0.0,
-                    Some(4),
-                    false,
-                )
+                .find_matches("the united states", Score::Occurrence, Some(4), false)
                 .expect("Failed to find matches");
         })
     });
@@ -136,7 +122,7 @@ fn bench_prefix_index(c: &mut Criterion) {
     g.bench_function("find_matches_2", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches("angela m", Score::Occurrence, 0.0, 0.0, None, false)
+                .find_matches("angela m", Score::Occurrence, None, false)
                 .expect("Failed to find matches");
         })
     });
@@ -144,7 +130,7 @@ fn bench_prefix_index(c: &mut Criterion) {
     g.bench_function("find_matches_2_no_ref", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches("angela m", Score::Occurrence, 0.0, 0.0, None, true)
+                .find_matches("angela m", Score::Occurrence, None, true)
                 .expect("Failed to find matches");
         })
     });

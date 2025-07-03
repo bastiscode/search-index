@@ -98,45 +98,6 @@ pub(crate) fn list_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
     result
 }
 
-fn idf(doc_freq: u32, doc_count: u32) -> Option<f32> {
-    if doc_count == 0 || doc_freq == 0 {
-        return None;
-    }
-    Some((doc_count as f32 / doc_freq as f32).log2())
-}
-
-pub(crate) fn tfidf(term_freq: u32, doc_freq: u32, doc_count: u32) -> Option<f32> {
-    if term_freq == 0 {
-        return None;
-    }
-    Some(term_freq as f32 * idf(doc_freq, doc_count)?)
-}
-
-pub(crate) fn bm25(
-    term_freq: u32,
-    doc_freq: u32,
-    doc_count: u32,
-    avg_doc_len: f32,
-    doc_len: u32,
-    k: f32,
-    b: f32,
-) -> Option<f32> {
-    assert!((0.0..=1.0).contains(&b), "b must be in [0, 1]");
-    assert!(k >= 0.0, "k must be non-negative");
-    if term_freq == 0 || avg_doc_len == 0.0 {
-        return None;
-    }
-    let idf = idf(doc_freq, doc_count)?;
-    let tf = term_freq as f32;
-    let alpha = 1.0 - b + b * doc_len as f32 / avg_doc_len;
-    let tf_star = if k > 0.0 {
-        tf * (1.0 + 1.0 / k) / (alpha + tf / k)
-    } else {
-        1.0
-    };
-    Some(tf_star * idf)
-}
-
 pub(crate) fn lower_bound(
     mut start: usize,
     mut end: usize,
@@ -183,7 +144,7 @@ pub(crate) fn upper_bound(
 
 #[cfg(test)]
 mod test {
-    use super::{bm25, lower_bound, normalize, tfidf, upper_bound};
+    use super::{lower_bound, normalize, upper_bound};
 
     #[test]
     fn test_normalize() {
@@ -259,46 +220,5 @@ mod test {
             Some((1, true))
         );
         assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&2)), Some(3));
-    }
-
-    #[test]
-    fn test_tfidf() {
-        let score = tfidf(1, 16, 64);
-        assert_eq!(score, Some(2.0));
-
-        let score = tfidf(1, 16, 0);
-        assert_eq!(score, None);
-
-        let score = tfidf(1, 0, 64);
-        assert_eq!(score, None);
-
-        let score = tfidf(0, 16, 64);
-        assert_eq!(score, None);
-    }
-
-    #[test]
-    fn test_bm25() {
-        // regular tfidf
-        let k = f32::INFINITY;
-        let b = 0.0;
-        let score = bm25(1, 16, 64, 8.0, 8, k, b);
-        assert_eq!(score, Some(2.0));
-        let score = bm25(1, 16, 64, 5.0, 17, k, b);
-        assert_eq!(score, Some(2.0));
-
-        // binary
-        let k = 0.0;
-        let b = 0.0;
-        let score = bm25(1, 16, 64, 8.0, 8, k, b);
-        assert_eq!(score, Some(2.0));
-
-        let score = bm25(0, 16, 64, 5.0, 17, k, b);
-        assert_eq!(score, None);
-
-        let score = bm25(1, 0, 64, 5.0, 17, k, b);
-        assert_eq!(score, None);
-
-        let score = bm25(1, 16, 0, 5.0, 17, k, b);
-        assert_eq!(score, None)
     }
 }

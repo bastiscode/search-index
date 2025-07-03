@@ -14,7 +14,7 @@ use std::{
     time::Instant,
 };
 
-use crate::utils::{bm25, lower_bound, tfidf, upper_bound};
+use crate::utils::{lower_bound, upper_bound};
 use crate::{
     data::IndexData,
     utils::{list_intersection, normalize, IndexIter},
@@ -34,7 +34,6 @@ pub struct PrefixIndex {
     name_offsets: Arc<[usize]>,
     inv_list_offsets: Arc<[usize]>,
     lengths: Arc<[u32]>,
-    avg_length: f32,
     id_to_index: Arc<[usize]>,
     sub_index: Option<Arc<[usize]>>,
 }
@@ -231,19 +230,13 @@ impl PrefixIndex {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Score {
     Occurrence,
-    Count,
-    TfIdf,
-    BM25,
 }
 
 impl FromPyObject<'_> for Score {
     fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
         let score: String = ob.extract()?;
         match score.as_str() {
-            "count" | "Count" => Ok(Self::Count),
             "occurrence" | "Occurrence" => Ok(Self::Occurrence),
-            "tfidf" | "TfIdf" => Ok(Self::TfIdf),
-            "bm25" | "BM25" => Ok(Self::BM25),
             _ => Err(PyErr::new::<PyValueError, _>("invalid score type")),
         }
     }
@@ -257,9 +250,6 @@ impl<'py> IntoPyObject<'py> for Score {
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             Self::Occurrence => "occurrence",
-            Self::Count => "count",
-            Self::TfIdf => "tfidf",
-            Self::BM25 => "bm25",
         }
         .into_pyobject(py)
     }
@@ -383,17 +373,13 @@ impl PrefixIndex {
         let (head, lengths, tail) = unsafe { length_bytes.align_to::<u32>() };
         assert!(head.is_empty() && tail.is_empty(), "lengths not aligned");
 
-        let lengths = lengths.to_vec();
-        let total_length: u32 = lengths.iter().sum();
-        let avg_length = total_length as f32 / lengths.len().max(1) as f32;
-        let lengths = Arc::from(lengths);
+        let lengths = Arc::from(lengths.to_vec());
 
         Ok(Self {
             data,
             keywords,
             names,
             inv_lists,
-            avg_length,
             keyword_offsets,
             name_offsets,
             inv_list_offsets,
@@ -406,8 +392,6 @@ impl PrefixIndex {
     #[pyo3(signature = (
         query,
         score = Score::Occurrence,
-        _k = 1.5,
-        _b = 0.75,
         min_keyword_length = None,
         no_refinement = false
     ))]
@@ -415,8 +399,6 @@ impl PrefixIndex {
         &self,
         query: &str,
         score: Score,
-        _k: f32,
-        _b: f32,
         min_keyword_length: Option<usize>,
         no_refinement: bool,
     ) -> anyhow::Result<Vec<(usize, f32)>> {
@@ -536,7 +518,6 @@ impl PrefixIndex {
                             - 0.5 * num_keywords_unmatched as f32
                             - 0.25 * num_words_unmatched as f32
                     }
-                    _ => !unimplemented!(),
                 };
                 Some((index, score))
             })
@@ -635,63 +616,42 @@ mod test {
         let index = PrefixIndex::load(data, index_dir).expect("Failed to load index");
 
         let matches = index
-            .find_matches("United States", Score::Occurrence, 1.5, 0.75, None, false)
+            .find_matches("United States", Score::Occurrence, None, false)
             .expect("Failed to find matches");
 
         assert_eq!(matches[0], (0, 2.0));
 
         // partial match
         let matches = index
-            .find_matches("United State", Score::Occurrence, 1.5, 0.75, None, false)
+            .find_matches("United State", Score::Occurrence, None, false)
             .expect("Failed to find matches");
 
         assert_eq!(matches[0], (0, 1.75));
 
         // now with synonym
         let matches = index
-            .find_matches("the U.S. of A", Score::Occurrence, 1.5, 0.75, None, false)
+            .find_matches("the U.S. of A", Score::Occurrence, None, false)
             .expect("Failed to find matches");
 
         assert_eq!(matches[0], (0, 4.0));
 
         // now with too high min_keyword_length
         let matches = index
-            .find_matches(
-                "the U.S. of A",
-                Score::Occurrence,
-                1.5,
-                0.75,
-                Some(4),
-                false,
-            )
+            .find_matches("the U.S. of A", Score::Occurrence, Some(4), false)
             .expect("Failed to find matches");
 
         assert!(matches.is_empty());
 
         // now with min_keyword_length
         let matches = index
-            .find_matches(
-                "the U.S. of A",
-                Score::Occurrence,
-                1.5,
-                0.75,
-                Some(3),
-                false,
-            )
+            .find_matches("the U.S. of A", Score::Occurrence, Some(3), false)
             .expect("Failed to find matches");
 
         assert_eq!(matches[0], (0, 4.0));
 
         // now with partially matching query
         let matches = index
-            .find_matches(
-                "the U.S. of B",
-                Score::Occurrence,
-                1.5,
-                0.75,
-                Some(3),
-                false,
-            )
+            .find_matches("the U.S. of B", Score::Occurrence, Some(3), false)
             .expect("Failed to find matches");
 
         // 3 exact matches, 1 keyword unmatched, 1 word unmatched
@@ -702,8 +662,6 @@ mod test {
             .find_matches(
                 "the U.S. of A the U.S. of A",
                 Score::Occurrence,
-                1.5,
-                0.75,
                 None,
                 false,
             )
@@ -715,7 +673,7 @@ mod test {
         let matches = index
             .sub_index_by_ids((1..index.data.len()).collect())
             .expect("Failed to create sub index")
-            .find_matches("the U.S. of A", Score::Occurrence, 1.5, 0.75, None, false)
+            .find_matches("the U.S. of A", Score::Occurrence, None, false)
             .expect("Failed to find matches");
 
         assert!(matches.iter().all(|(id, _)| *id != 0));

@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import random
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 import faiss
 import numpy as np
@@ -53,50 +53,40 @@ def select_faiss_binary_index(d: int, n: int) -> tuple[str, faiss.IndexBinary]:
 
 
 class EmbeddingModel:
-    def __init__(
-        self,
-        model: str,
-        precision: str,
-        embedding_dim: int | None = None,
-        device: str | None = None,
-    ):
-        assert precision in ["float32", "ubinary"], f"invalid precision {precision}"
+    def __init__(self, model: str, device: str | None = None):
         self.model = model
         self.encoder = SentenceTransformer(model, device=device)
-        self.precision = precision
-        self.dim = self.encoder.get_sentence_embedding_dimension()
+        self.dim: int = self.encoder.get_sentence_embedding_dimension()  # type: ignore
         assert self.dim is not None, "unable to get embedding dimension"
-        if embedding_dim is not None and embedding_dim < self.dim:
-            self.dim = embedding_dim
 
-        if self.precision == "ubinary":
-            assert self.dim % 8 == 0, "embedding dimension must be a multiple of 8"
-            self._dim = self.dim // 8
-        else:
-            self._dim = self.dim
-
-    def same_as_config(
-        self,
-        model: str,
-        precision: str,
-        embedding_dim: int | None = None,
-    ) -> bool:
-        return (
-            self.model == model
-            and self.precision == precision
-            and (embedding_dim is None or self.dim == embedding_dim)
-        )
+    def same_as(self, model: str) -> bool:
+        return self.model == model
 
     def embed(
         self,
         texts: list[str],
+        precision: str = "float32",
+        embedding_dim: int | None = None,
         batch_size: int | None = None,
         show_progress: bool = False,
     ) -> np.ndarray:
+        assert precision in ["float32", "ubinary"], f"invalid precision {precision}"
+
+        if embedding_dim and embedding_dim < self.dim:
+            dim = embedding_dim
+        else:
+            dim = self.dim
+
+        if precision == "ubinary":
+            assert dim % 8 == 0, "embedding dimension must be a multiple of 8"
+            dim = dim // 8
+
         if not texts:
-            return np.empty((0, self._dim))
+            return np.empty((0, dim))
+
         if batch_size is None:
             batch_size = len(texts)
+
         # sort texts by length to minimize padding
         indices = np.argsort([-len(text) for text in texts])
         sorted_texts = [texts[i] for i in indices]
@@ -116,9 +106,9 @@ class EmbeddingModel:
                 batch,
                 normalize_embeddings=True,
                 batch_size=len(batch),
-                precision=self.precision,
+                precision=precision,  # type: ignore
                 show_progress_bar=False,
-            )[:, : self._dim]
+            )[:, :dim]
             full_embeddings.extend(embeddings)
 
         embeddings = np.vstack(full_embeddings)
@@ -134,13 +124,13 @@ class SimilarityIndex(SearchIndex):
         model: EmbeddingModel,
         data: IndexData,
         index: faiss.Index,
-        index_name: str,
+        config: dict[str, Any],
         subset: set[int] | None = None,
     ) -> None:
         self.model = model
         self.data = data
         self.index = index
-        self.index_name = index_name
+        self.config = config
         self.subset = subset
 
     @staticmethod
@@ -216,7 +206,7 @@ class SimilarityIndex(SearchIndex):
             else:
                 model = "mixedbread-ai/mxbai-embed-2d-large-v1"
 
-        emb_model = EmbeddingModel(model, precision, embedding_dim, device)
+        emb_model = EmbeddingModel(model, device)
 
         if precision == "float32":
             index_name, index = select_faiss_index(emb_model.dim, index_size)
@@ -263,6 +253,8 @@ class SimilarityIndex(SearchIndex):
 
             train_embeddings = emb_model.embed(
                 train_texts,
+                precision=precision,
+                embedding_dim=embedding_dim,
                 batch_size=batch_size,
                 show_progress=show_progress,
             )
@@ -338,11 +330,10 @@ class SimilarityIndex(SearchIndex):
         else:
             index = faiss.read_index_binary(index_file)
 
-        index_name = config.pop("index_name")
-        if model is None or not model.same_as_config(**config):
-            model = EmbeddingModel(**config, device=device)
+        if model is None or not model.same_as(config["model"]):
+            model = EmbeddingModel(model=config["model"], device=device)
 
-        return SimilarityIndex(model, data, index, index_name)
+        return SimilarityIndex(model, data, index, config)
 
     def find_matches(
         self,
@@ -370,9 +361,10 @@ class SimilarityIndex(SearchIndex):
         else:
             selector = None
 
-        is_ivf = "IVF" in self.index_name
-        is_binary = self.index_name.startswith("B")
-        assert is_binary == (self.model.precision == "ubinary"), (
+        name = self.config["index_name"]
+        is_ivf = "IVF" in name
+        is_binary = name.startswith("B")
+        assert is_binary == (self.config["precision"] == "ubinary"), (
             "Model and index mismatch"
         )
 
@@ -386,8 +378,13 @@ class SimilarityIndex(SearchIndex):
             # flat float index
             search_kwargs["params"] = faiss.SearchParameters(sel=selector)
 
-        query_embeddings = self.model.embed([query])
+        query_embeddings = self.model.embed(
+            [query],
+            precision=self.config["precision"],
+            embedding_dim=self.config["embedding_dim"],
+        )
         scores, indices = self.index.search(query_embeddings, k_scaled, **search_kwargs)
+        dim = query_embeddings.shape[1] * (8 if is_binary else 1)
 
         # deduplicate based on id
         seen = set()
@@ -397,23 +394,20 @@ class SimilarityIndex(SearchIndex):
                 break
             elif index in seen:
                 continue
-            # this is required because IVF binary indices do not support
-            # ID selectors yet, so we might get indices outside the subset
-            elif self.subset is not None and index not in self.subset:
-                continue
             elif len(deduped) >= k:
                 break
-            elif min_score is not None and score < min_score:
-                # break because scores are sorted
-                break
-
-            seen.add(index)
 
             if is_binary:
                 # convert binary index score to [0, 1] range to more
                 # align with cosine-similarity for float indices
                 # (even though cosine-similarity can be [-1, 1])
-                score = (self.model.dim - score) / self.model.dim
+                score = (dim - score) / dim
+
+            if min_score is not None and score < min_score:
+                # break because scores are sorted
+                break
+
+            seen.add(index)
 
             deduped.append((index, score))
 
@@ -460,7 +454,7 @@ class SimilarityIndex(SearchIndex):
             self.model,
             self.data,
             self.index,
-            self.index_name,
+            self.config,
             subset,
         )
 

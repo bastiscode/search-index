@@ -402,9 +402,7 @@ impl PrefixIndex {
         min_keyword_length: Option<usize>,
         no_refinement: bool,
     ) -> anyhow::Result<Vec<(usize, f32)>> {
-        let min_keyword_length = min_keyword_length
-            .map(|len| len.max(1))
-            .unwrap_or(MIN_KEYWORD_LEN);
+        let min_keyword_length = min_keyword_length.unwrap_or(MIN_KEYWORD_LEN);
         let start = Instant::now();
         let query_norm = normalize(query);
         let (long_keywords, mut short_keywords): (Vec<_>, Vec<_>) = query_norm
@@ -413,7 +411,7 @@ impl PrefixIndex {
             .partition(|(_, keyword)| keyword.len() >= min_keyword_length);
 
         if no_refinement {
-            // not refiment, just use the long keywords
+            // no refinement, just use the long keywords
             short_keywords.clear();
         }
 

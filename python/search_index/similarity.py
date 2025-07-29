@@ -286,6 +286,8 @@ class SimilarityIndex(SearchIndex):
 
             embeddings = emb_model.embed(
                 index_texts,
+                precision=precision,
+                embedding_dim=embedding_dim,
                 batch_size=batch_size,
                 show_progress=show_progress,
             )

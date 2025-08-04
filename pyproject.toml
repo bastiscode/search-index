@@ -1,7 +1,7 @@
 [project]
 name = "search-index"
 description = "Search indices backed by Rust"
-version = "0.2.2"
+version = "0.2.3"
 authors = [{ name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }]
 readme = "README.md"
 license = { file = "LICENSE" }

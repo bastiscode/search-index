@@ -1,6 +1,6 @@
 [package]
 name = "search-index"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 publish = false
 
@@ -21,7 +21,7 @@ any_ascii = "0.3"
 ordered-float = "5"
 
 [dev-dependencies]
-criterion = "0.6"
+criterion = "0.7"
 tempfile = "3.6"
 
 [[bench]]

@@ -46,7 +46,7 @@ fn bench_data_and_mapping(c: &mut Criterion) {
     g.bench_function("get_val", |b| {
         b.iter(|| {
             let _ = data
-                .get_val(data.len() / 2, 3)
+                .get_val(data.len() / 2, 0)
                 .expect("Failed to get value");
         })
     });
@@ -59,8 +59,7 @@ fn bench_data_and_mapping(c: &mut Criterion) {
 
     g.bench_function("build_mapping", |b| {
         b.iter(|| {
-            let _ =
-                Mapping::build(data.clone(), &mapping_file, 3).expect("Failed to build mapping");
+            let _ = Mapping::build(data.clone(), &mapping_file).expect("Failed to build mapping");
         })
     });
 
@@ -97,7 +96,7 @@ fn bench_prefix_index(c: &mut Criterion) {
     IndexData::build(&data_file, &offsets_file).expect("Failed to build index data");
     let data = IndexData::load(&data_file, &offsets_file).expect("Failed to load index data");
 
-    PrefixIndex::build(data.clone(), &index_dir, true).expect("Failed to build index");
+    PrefixIndex::build(data.clone(), &index_dir).expect("Failed to build index");
 
     let index = PrefixIndex::load(data, &index_dir).expect("Failed to load index");
 

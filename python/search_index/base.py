@@ -38,6 +38,14 @@ class SearchIndex:
         """
         ...
 
+    def get_identifier(self, id: int) -> str:
+        """
+
+        Returns the identifier for the given ID.
+
+        """
+        ...
+
     def get_name(self, id: int) -> str:
         """
 

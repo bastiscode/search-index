@@ -191,8 +191,7 @@ mod test {
         IndexData::build(&data_file, &offset_file).expect("Failed to build index data");
         let data = IndexData::load(&data_file, &offset_file).expect("Failed to load index data");
         assert_eq!(data.len(), 99);
-        assert_eq!(data.get_val(0, 0), Some("United States"));
-        assert_eq!(data.get_val(2, 1), Some("412"));
-        assert_eq!(data.get_val(98, 0), Some("Barack Obama"));
+        assert_eq!(data.get_val(0, 1), Some("United States"));
+        assert_eq!(data.get_val(98, 1), Some("Barack Obama"));
     }
 }

@@ -9,7 +9,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm, trange
 
-from search_index import SearchIndex
+from search_index.base import SearchIndex
 from search_index._internal import IndexData
 
 
@@ -137,8 +137,6 @@ class SimilarityIndex(SearchIndex):
     def build(
         data: IndexData,
         index_dir: str,
-        use_synonyms: bool = True,
-        use_columns: tuple[int, ...] | None = None,
         model: str | None = None,
         embedding_dim: int | None = None,
         batch_size: int = 32,
@@ -152,13 +150,6 @@ class SimilarityIndex(SearchIndex):
         Builds the index from the given file and saves
         it in the index dir.
 
-        The file should contain one record per line, in the following format:
-            name\tscore\tsynonyms\tinfo1\tinfo2\t...
-
-        Synonyms are expected to be separated by three semicolons.
-
-        An example line:
-            Albert Einstein\t275\tEinstein;;;A. Einstein\tGerman physicist\t
         """
         logger = logging.getLogger("SIMILARITY INDEX BUILD")
 
@@ -170,27 +161,7 @@ class SimilarityIndex(SearchIndex):
 
             for i in indices:
                 row = data.get_row(i)
-                text = [row[0]]
-
-                if use_synonyms:
-                    for synonym in row[2].split(";;;"):
-                        if synonym:
-                            text.append(synonym)
-
-                if not use_columns:
-                    yield i, text
-                    continue
-
-                for col in use_columns:
-                    assert col > 2, (
-                        "column index must be greater than 2, because "
-                        "0, 1, and 2 are reserved for name, score, and synonyms"
-                    )
-                    assert col < len(row), f"column {col} out of range"
-                    if row[col]:
-                        text.append(row[col])
-
-                yield i, text
+                yield i, row[1:]  # first column is the ID
 
         # calculate index size
         index_size = sum(len(text) for _, text in data_iter())
@@ -415,13 +386,21 @@ class SimilarityIndex(SearchIndex):
 
         return deduped
 
+    def get_identifier(self, id: int) -> str:
+        """
+
+        Returns the identifier for the given ID.
+
+        """
+        return self.data.get_val(id, 0)
+
     def get_name(self, id: int) -> str:
         """
 
         Returns the name for the given ID.
 
         """
-        return self.data.get_val(id, 0)
+        return self.data.get_val(id, 1)
 
     def get_row(self, id: int) -> str:
         """

@@ -32,7 +32,10 @@ def parse_args():
     )
     parser.add_argument("--bench", action="store_true", help="Run benchmark")
     parser.add_argument(
-        "-n", type=int, default=10, help="Number of benchmark iterations"
+        "-n",
+        type=int,
+        default=10,
+        help="Number of benchmark iterations",
     )
     return parser.parse_args()
 
@@ -59,7 +62,7 @@ if __name__ == "__main__":
             print()
         print(
             f"{i + 1}. match: id={id}, key={key}\n{idx.get_name(id)} "
-            f"{idx.get_val(id, 3)}"
+            f"{idx.get_identifier(id)}"
         )
 
     if args.bench:
@@ -87,7 +90,7 @@ if __name__ == "__main__":
             print()
         print(
             f"{i + 1}. sub match: id={id}, key={key}\n{sub_idx.get_name(id)} "
-            f"{sub_idx.get_val(id, 3)}"
+            f"{sub_idx.get_identifier(id)}"
         )
 
     if args.bench:

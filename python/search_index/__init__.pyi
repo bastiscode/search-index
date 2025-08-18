@@ -81,10 +81,26 @@ class Mapping:
     A mapping from a identifier column of index data to its index.
 
     """
-    def __init__(self, data: IndexData, identifier_column: int) -> None:
+
+    @staticmethod
+    def build(
+        data: IndexData,
+        mapping_file: str,
+        identifier_column: int = 0,
+    ) -> None:
         """
 
-        Initializes the mapping from the given data and identifier column.
+        Builds the mapping from the given data and identifier column
+        and saves it in the mapping file.
+
+        """
+        pass
+
+    @staticmethod
+    def load(data: IndexData, mapping_file: str) -> "Mapping":
+        """
+
+        Loads the mapping from the given data and mapping file.
 
         """
         pass

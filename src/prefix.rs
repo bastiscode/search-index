@@ -259,8 +259,7 @@ impl<'py> IntoPyObject<'py> for Score {
 impl PrefixIndex {
     // implement functions from pyi interface
     #[staticmethod]
-    #[pyo3(signature = (data, index_dir, use_synonyms = true))]
-    pub fn build(data: IndexData, index_dir: &str, use_synonyms: bool) -> anyhow::Result<()> {
+    pub fn build(data: IndexData, index_dir: &str) -> anyhow::Result<()> {
         let index_dir = Path::new(index_dir);
         let mut inv_lists: HashMap<String, Vec<u32>> = HashMap::new();
         let mut lengths = vec![];
@@ -272,16 +271,8 @@ impl PrefixIndex {
         let mut lengths_file = BufWriter::new(File::create(index_dir.join("index.lengths"))?);
         let mut id = 0;
         for (i, row) in data.iter().enumerate() {
-            if row.len() != 5 {
-                return Err(anyhow!("expected 5 columns in row {i}, got {}", row.len()));
-            }
-            let name = normalize(row[0]);
-            let mut names = vec![name];
-            if use_synonyms {
-                names.extend(row[2].split(";;;").map(normalize));
-            }
             let index_bytes = u32::try_from(i)?.to_le_bytes();
-            for name in names {
+            for name in row.into_iter().skip(1).map(normalize) {
                 let mut length: u32 = 0;
                 for word in name.split_whitespace() {
                     let inv_list = inv_lists.entry(word.to_string()).or_default();
@@ -289,7 +280,7 @@ impl PrefixIndex {
                     length += 1;
                 }
                 if id == u32::MAX {
-                    return Err(anyhow!("too many names, max {} supported", u32::MAX));
+                    return Err(anyhow!("too many labels, max {} supported", u32::MAX));
                 }
                 id += 1;
                 lengths.push(length);
@@ -537,9 +528,15 @@ impl PrefixIndex {
         "prefix"
     }
 
-    pub fn get_name(&self, id: usize) -> anyhow::Result<String> {
+    pub fn get_identifier(&self, id: usize) -> anyhow::Result<String> {
         self.data
             ._get_val(id, 0)
+            .ok_or_else(|| anyhow!("invalid id"))
+    }
+
+    pub fn get_name(&self, id: usize) -> anyhow::Result<String> {
+        self.data
+            ._get_val(id, 1)
             .ok_or_else(|| anyhow!("invalid id"))
     }
 
@@ -609,7 +606,7 @@ mod test {
             .to_str()
             .expect("Invalid index directory path");
 
-        PrefixIndex::build(data.clone(), index_dir, true).expect("Failed to build index");
+        PrefixIndex::build(data.clone(), index_dir).expect("Failed to build index");
 
         let index = PrefixIndex::load(data, index_dir).expect("Failed to load index");
 

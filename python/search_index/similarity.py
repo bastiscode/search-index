@@ -144,6 +144,7 @@ class SimilarityIndex(SearchIndex):
         train_on_gpu: bool = False,
         precision: str | None = None,
         show_progress: bool = False,
+        **kwargs: Any,
     ) -> None:
         """
 

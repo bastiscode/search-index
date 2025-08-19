@@ -123,7 +123,6 @@ class PrefixIndex(SearchIndex):
     def build(
         data: IndexData,
         index_dir: str,
-        use_synonyms: bool = True,
         **kwargs: Any,
     ) -> None:
         """

@@ -18,6 +18,16 @@ pub struct Mapping {
 
 const U64_SIZE: usize = size_of::<u64>();
 
+impl Mapping {
+    pub fn len(&self) -> usize {
+        self.permutation.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.permutation.is_empty()
+    }
+}
+
 #[pymethods]
 impl Mapping {
     #[staticmethod]
@@ -56,6 +66,10 @@ impl Mapping {
         }
 
         Ok(Self { data, permutation })
+    }
+
+    pub fn __len__(&self) -> usize {
+        self.len()
     }
 
     pub fn get(&self, identifier: &str) -> Option<usize> {

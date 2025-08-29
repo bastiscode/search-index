@@ -225,6 +225,48 @@ impl PrefixIndex {
     fn get_index(&self, id: usize) -> Option<usize> {
         self.id_to_index.get(id).copied()
     }
+
+    fn occurrence_score(&self, id: usize, matches: &[Match], num_keywords: usize) -> f32 {
+        // calculate score for item with id `id` based on the given matches
+
+        let mut num_keyword_exact_matches = 0;
+        let mut num_keyword_prefix_matches = 0;
+        let mut match_counts = HashMap::new();
+        for m in matches
+            .iter()
+            .sorted_by_key(
+                |Match {
+                     keyword_id, exact, ..
+                 }| (!exact, keyword_id),
+            )
+            .unique_by(|Match { keyword_id, .. }| keyword_id)
+        {
+            let match_count = match_counts.entry(m.word_id).or_insert(0);
+
+            let diff = m.freq.saturating_sub(*match_count);
+            if diff == 0 {
+                // already counted enough matches for this word
+                continue;
+            }
+
+            *match_count += 1;
+
+            if m.exact {
+                num_keyword_exact_matches += 1;
+            } else {
+                num_keyword_prefix_matches += 1;
+            }
+        }
+
+        let num_keywords_unmatched =
+            num_keywords - num_keyword_exact_matches - num_keyword_prefix_matches;
+        let num_words_unmatched = self.lengths[id] - match_counts.values().sum::<u32>();
+
+        let score =
+            1.0 * num_keyword_exact_matches as f32 + 0.75 * num_keyword_prefix_matches as f32;
+        let penalty = 0.5 * num_keywords_unmatched as f32 + 0.25 * num_words_unmatched as f32;
+        score - penalty
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -471,42 +513,9 @@ impl PrefixIndex {
         let item_matches: Vec<_> = item_matches
             .into_iter()
             .filter_map(|(id, matches)| {
-                // scores is a list of tuples (query_id, keyword_id, is_exact, freq, score)
                 let index = self.get_index(id)?;
                 let score = match score {
-                    Score::Occurrence => {
-                        let num_keywords_matched = matches
-                            .iter()
-                            .unique_by(|Match { keyword_id, .. }| keyword_id)
-                            .count();
-                        let num_keywords_unmatched = num_keywords - num_keywords_matched;
-
-                        let num_words_matched: u32 = matches
-                            .iter()
-                            .unique_by(|Match { word_id, .. }| word_id)
-                            .map(|Match { freq, .. }| freq)
-                            .sum();
-                        let num_words_unmatched = self.lengths[id] - num_words_matched;
-
-                        let mut num_keyword_exact_matches = 0;
-                        let mut num_keyword_prefix_matches = 0;
-                        for m in matches
-                            .iter()
-                            .sorted_by_key(|Match { exact, .. }| !exact)
-                            .unique_by(|Match { keyword_id, .. }| keyword_id)
-                        {
-                            if m.exact {
-                                num_keyword_exact_matches += 1;
-                            } else {
-                                num_keyword_prefix_matches += 1;
-                            }
-                        }
-
-                        1.0 * num_keyword_exact_matches as f32
-                            + 0.75 * num_keyword_prefix_matches as f32
-                            - 0.5 * num_keywords_unmatched as f32
-                            - 0.25 * num_words_unmatched as f32
-                    }
+                    Score::Occurrence => self.occurrence_score(id, &matches, num_keywords),
                 };
                 Some((index, score))
             })
@@ -581,11 +590,11 @@ mod test {
 
     use super::*;
 
-    #[test]
-    fn test_prefix_index() {
-        let dir = env!("CARGO_MANIFEST_DIR");
+    fn test_data() -> Vec<&'static str> {
+        vec!["id\tlabels", "0\tagar", "1\tagar agar"]
+    }
 
-        let data_file = format!("{dir}/test.tsv");
+    fn build_prefix_index(file: &str) -> PrefixIndex {
         let temp_dir = tempdir().expect("Failed to create temp dir");
 
         let offsets_file = temp_dir
@@ -596,8 +605,8 @@ mod test {
             .unwrap()
             .to_string();
 
-        IndexData::build(&data_file, &offsets_file).expect("Failed to build index data");
-        let data = IndexData::load(&data_file, &offsets_file).expect("Failed to load index data");
+        IndexData::build(file, &offsets_file).expect("Failed to build index data");
+        let data = IndexData::load(file, &offsets_file).expect("Failed to load index data");
 
         let index_dir = temp_dir.path().join("index");
         create_dir_all(&index_dir).expect("Failed to create index directory");
@@ -607,8 +616,38 @@ mod test {
             .expect("Invalid index directory path");
 
         PrefixIndex::build(data.clone(), index_dir).expect("Failed to build index");
+        PrefixIndex::load(data, index_dir).expect("Failed to load index")
+    }
 
-        let index = PrefixIndex::load(data, index_dir).expect("Failed to load index");
+    #[test]
+    fn test_special_prefix_index() {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+        let data_file = temp_dir.path().join("test.tsv");
+
+        let mut file = File::create(&data_file).expect("Failed to create test data file");
+        for line in test_data() {
+            writeln!(file, "{line}").expect("Failed to write test data");
+        }
+
+        let index = build_prefix_index(data_file.to_str().expect("Invalid data file path"));
+
+        let matches = index
+            .find_matches("agar", Score::Occurrence, None, false)
+            .expect("Failed to find matches");
+        assert_eq!(matches, vec![(0, 1.0), (1, 0.75)]);
+
+        let matches = index
+            .find_matches("agar agar", Score::Occurrence, None, false)
+            .expect("Failed to find matches");
+        assert_eq!(matches, vec![(1, 2.0), (0, 0.5)]);
+    }
+
+    #[test]
+    fn test_prefix_index() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let data_file = format!("{dir}/test.tsv");
+
+        let index = build_prefix_index(&data_file);
 
         let matches = index
             .find_matches("United States", Score::Occurrence, None, false)
@@ -653,6 +692,8 @@ mod test {
         assert_eq!(matches[0], (0, 3.0 - 0.5 - 0.25));
 
         // now with duplicate query keywords
+        // the first 4 match exactly, but the second 4 decrease the score
+        // by 0.5 each because they are not found again
         let matches = index
             .find_matches(
                 "the U.S. of A the U.S. of A",
@@ -662,7 +703,7 @@ mod test {
             )
             .expect("Failed to find matches");
 
-        assert_eq!(matches[0], (0, 8.0));
+        assert_eq!(matches[0], (0, 2.0));
 
         // now exclude with sub index
         let matches = index

@@ -173,10 +173,7 @@ class SimilarityIndex(SearchIndex):
             precision = "float32" if index_size < 1_000_000 else "ubinary"
 
         if model is None:
-            if embedding_dim is None:
-                model = "mixedbread-ai/mxbai-embed-large-v1"
-            else:
-                model = "mixedbread-ai/mxbai-embed-2d-large-v1"
+            model = "Qwen/Qwen3-Embedding-0.6B"
 
         emb_model = EmbeddingModel(model, device)
 

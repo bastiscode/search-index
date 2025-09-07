@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, sync::Arc};
+use std::cmp::Ordering;
 
 use any_ascii::any_ascii;
 use itertools::Itertools;
@@ -9,16 +9,16 @@ use crate::data::IndexData;
 #[pyclass]
 pub struct IndexIter {
     data: IndexData,
-    sub_index: Option<Arc<[usize]>>,
     index: usize,
+    indices: Option<Vec<usize>>,
 }
 
 impl IndexIter {
-    pub(crate) fn new(data: IndexData, sub_index: Option<Arc<[usize]>>) -> Self {
+    pub(crate) fn new(data: IndexData, indices: Option<Vec<usize>>) -> Self {
         Self {
             data,
-            sub_index,
             index: 0,
+            indices,
         }
     }
 }
@@ -30,19 +30,18 @@ impl IndexIter {
     }
 
     pub fn __next__(&mut self) -> Option<Vec<String>> {
-        let id = if let Some(sub_index) = self.sub_index.as_ref() {
-            if self.index >= sub_index.len() {
+        let index = if let Some(indices) = self.indices.as_ref() {
+            if self.index >= indices.len() {
                 return None;
             }
-            sub_index[self.index]
+            indices[self.index]
+        } else if self.index >= self.data.len() {
+            return None;
         } else {
-            if self.index >= self.data.len() {
-                return None;
-            }
             self.index
         };
         self.index += 1;
-        self.data._get_row(id)
+        self.data._get_row(index)
     }
 }
 
@@ -75,27 +74,6 @@ pub(crate) fn normalize(name: &str) -> String {
             }
         })
         .join(" ")
-}
-
-pub(crate) fn list_intersection(a: &[usize], b: &[usize]) -> Vec<usize> {
-    // intersect two sorted lists of ids
-    // assumes that the input lists are sorted
-    // and that the ids are unique per list
-    let mut result = vec![];
-    let mut i = 0;
-    let mut j = 0;
-    while i < a.len() && j < b.len() {
-        match a[i].cmp(&b[j]) {
-            Ordering::Less => i += 1,
-            Ordering::Greater => j += 1,
-            Ordering::Equal => {
-                result.push(a[i]);
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    result
 }
 
 pub(crate) fn lower_bound(
@@ -179,7 +157,7 @@ mod test {
 
     #[test]
     fn test_bounds() {
-        let values = vec![1, 1, 2, 3, 3, 5, 8, 8, 9];
+        let values = [1, 1, 2, 3, 3, 5, 8, 8, 9];
         assert_eq!(
             lower_bound(0, values.len(), |i| values[i].cmp(&3)),
             Some((3, true))
@@ -207,14 +185,14 @@ mod test {
         assert_eq!(lower_bound(0, values.len(), |i| values[i].cmp(&3)), None);
         assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&3)), None);
 
-        let values = vec![2, 2];
+        let values = [2, 2];
         assert_eq!(
             lower_bound(0, values.len(), |i| values[i].cmp(&2)),
             Some((0, true))
         );
         assert_eq!(upper_bound(0, values.len(), |i| values[i].cmp(&2)), None);
 
-        let values = vec![1, 2, 2, 4];
+        let values = [1, 2, 2, 4];
         assert_eq!(
             lower_bound(0, values.len(), |i| values[i].cmp(&2)),
             Some((1, true))

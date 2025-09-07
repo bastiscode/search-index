@@ -144,3 +144,4 @@ dmypy.json
 /benches/data.offsets
 /benches/mapping.bin
 /benches/index
+/data

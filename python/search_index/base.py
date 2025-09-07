@@ -29,11 +29,11 @@ class SearchIndex:
         """
         ...
 
-    def find_matches(self, query: str, **kwargs: Any) -> list[tuple[int, Any]]:
+    def find_matches(self, query: str, **kwargs: Any) -> list[tuple[int, float, int]]:
         """
 
-        Returns a sorted list of tuples containing IDs
-        and ranking key for all matches for the given query.
+        Returns a sorted list of tuples containing ID, score,
+        and corresponding value column for all matches for the given query.
 
         """
         ...

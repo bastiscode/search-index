@@ -1,12 +1,12 @@
 use std::{fs::create_dir_all, path::Path};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
-use search_index::{IndexData, Mapping, PrefixIndex, Score};
+use search_index::{IndexData, Mapping, PrefixIndex};
 
 fn bench_data_and_mapping(c: &mut Criterion) {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let base_dir = Path::new(dir).join("benches");
+    let base_dir = Path::new(dir).join("data/benches");
     let data_file = base_dir
         .join("data.tsv")
         .as_os_str()
@@ -68,7 +68,7 @@ fn bench_data_and_mapping(c: &mut Criterion) {
 
 fn bench_prefix_index(c: &mut Criterion) {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let base_dir = Path::new(dir).join("benches");
+    let base_dir = Path::new(dir).join("data/benches");
     let data_file = base_dir
         .join("data.tsv")
         .as_os_str()
@@ -102,34 +102,34 @@ fn bench_prefix_index(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("prefix_index");
 
-    g.bench_function("find_matches_1", |b| {
+    g.bench_function("find_matches_usa_100", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches("the united states", Score::Occurrence, None, false)
+                .find_matches("the united states", 100)
                 .expect("Failed to find matches");
         })
     });
 
-    g.bench_function("find_matches_1_min_4", |b| {
+    g.bench_function("find_matches_usa_10", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches("the united states", Score::Occurrence, Some(4), false)
+                .find_matches("the united states", 10)
                 .expect("Failed to find matches");
         })
     });
 
-    g.bench_function("find_matches_2", |b| {
+    g.bench_function("find_matches_merkel_100", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches("angela m", Score::Occurrence, None, false)
+                .find_matches("angela m", 100)
                 .expect("Failed to find matches");
         })
     });
 
-    g.bench_function("find_matches_2_no_ref", |b| {
+    g.bench_function("find_matches_merkel_10", |b| {
         b.iter(|| {
             let _ = index
-                .find_matches("angela m", Score::Occurrence, None, true)
+                .find_matches("angela m", 10)
                 .expect("Failed to find matches");
         })
     });

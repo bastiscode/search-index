@@ -2,12 +2,13 @@ import json
 import logging
 import os
 import random
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm, trange
+from sortedcontainers import SortedSet
 
 from search_index.base import SearchIndex
 from search_index._internal import IndexData
@@ -118,6 +119,32 @@ class EmbeddingModel:
         return embeddings[inv_indices]
 
 
+def get_index_from_id(id: int, id_per_index: list[int]) -> int:
+    # id to index stores the first id for each index
+    # so we can do a binary search to find the index
+    # for a given id
+    left = 0
+    right = len(id_per_index)
+    answer = -1
+    while left < right:
+        mid = (left + right) // 2
+
+        if id < id_per_index[mid]:
+            right = mid
+        else:
+            answer = mid
+            left = mid + 1
+
+    assert answer >= 0
+    return answer
+
+
+def get_column_from_id(id: int, id_per_index: list[int]) -> int:
+    index = get_index_from_id(id, id_per_index)
+    first_id = id_per_index[index]
+    return id - first_id + 1  # +1 because first column is identifier
+
+
 class SimilarityIndex(SearchIndex):
     def __init__(
         self,
@@ -125,12 +152,14 @@ class SimilarityIndex(SearchIndex):
         data: IndexData,
         index: faiss.Index,
         config: dict[str, Any],
-        subset: set[int] | None = None,
+        id_per_index: list[int],
+        subset: SortedSet | None = None,
     ) -> None:
         self.model = model
         self.data = data
         self.index = index
         self.config = config
+        self.id_per_index = id_per_index
         self.subset = subset
 
     @staticmethod
@@ -154,18 +183,24 @@ class SimilarityIndex(SearchIndex):
         """
         logger = logging.getLogger("SIMILARITY INDEX BUILD")
 
-        def data_iter(
-            indices: Iterable[int] | None = None,
-        ) -> Iterator[tuple[int, list[str]]]:
-            if indices is None:
-                indices = range(len(data))
-
-            for i in indices:
-                row = data.get_row(i)
-                yield i, row[1:]  # first column is the ID
+        def data_iter() -> Iterator[tuple[int, int, str]]:
+            id = 0
+            for i, (_, *texts) in enumerate(data):
+                for text in texts:
+                    yield id, i, text
+                    id += 1
 
         # calculate index size
-        index_size = sum(len(text) for _, text in data_iter())
+        id_per_index = []
+        last = None
+        index_size = 0
+        for id, index, _ in data_iter():
+            if last is None or index != last:
+                id_per_index.append(id)
+                last = index
+            index_size += 1
+
+        assert len(id_per_index) == len(data)
 
         # set some sensible defaults
         if precision is None:
@@ -202,23 +237,26 @@ class SimilarityIndex(SearchIndex):
                 except Exception as e:
                     logger.error(f"Failed to move clustering index to GPUs: {e}")
 
-            train_ids = []
-            train_texts = []
             train_size = min(
-                index_size, round(1.1 * index.cp.min_points_per_centroid * index.nlist)
+                index_size,
+                round(1.1 * index.cp.min_points_per_centroid * index.nlist),
             )
             train_factor = train_size / index_size
             data_samples = int(train_factor * len(data))
 
-            train_samples = random.sample(range(len(data)), data_samples)
-            for id, text in tqdm(
-                data_iter(train_samples),
+            train_ids = random.sample(range(index_size), data_samples)
+            train_texts = []
+            for id in tqdm(
+                train_ids,
                 desc="Getting train data",
                 total=data_samples,
                 disable=not show_progress,
             ):
-                train_ids.extend((id for _ in range(len(text))))
-                train_texts.extend(text)
+                index = get_index_from_id(id, id_per_index)
+                row = data.get_row(index)
+                column = get_column_from_id(id, id_per_index)
+                text = row[column]
+                train_texts.append(text)
 
             train_embeddings = emb_model.embed(
                 train_texts,
@@ -242,7 +280,7 @@ class SimilarityIndex(SearchIndex):
         if len(added_ids) < len(data):
             index_ids = []
             index_texts = []
-            for id, text in tqdm(
+            for id, _, text in tqdm(
                 data_iter(),
                 desc="Getting index data",
                 total=len(data),
@@ -250,8 +288,9 @@ class SimilarityIndex(SearchIndex):
             ):
                 if id in added_ids:
                     continue
-                index_ids.extend((id for _ in range(len(text))))
-                index_texts.extend(text)
+
+                index_ids.append(id)
+                index_texts.append(text)
 
             embeddings = emb_model.embed(
                 index_texts,
@@ -268,6 +307,10 @@ class SimilarityIndex(SearchIndex):
             faiss.write_index(index, index_file)
         else:
             faiss.write_index_binary(index, index_file)
+
+        id_per_index_file = os.path.join(index_dir, "index.id-per-index")
+        id_per_index_np = np.array(id_per_index, dtype=np.uint32)
+        id_per_index_np.tofile(id_per_index_file)
 
         with open(os.path.join(index_dir, "config.json"), "w") as f:
             json.dump(
@@ -304,19 +347,23 @@ class SimilarityIndex(SearchIndex):
         if model is None or not model.same_as(config["model"]):
             model = EmbeddingModel(model=config["model"], device=device)
 
-        return SimilarityIndex(model, data, index, config)
+        id_per_index_file = os.path.join(index_dir, "index.id-per-index")
+        id_per_index_np = np.fromfile(id_per_index_file, dtype=np.uint32)
+        id_per_index = id_per_index_np.tolist()
+
+        return SimilarityIndex(model, data, index, config, id_per_index)
 
     def find_matches(
         self,
         query: str,
         k: int = 100,
-        nprobe: int = 10,
         min_score: float | None = None,
-    ) -> list[tuple[int, float]]:
+        nprobe: int = 10,
+    ) -> list[tuple[int, float, int]]:
         """
 
-        Returns a sorted list of tuples containing IDs
-        and ranking key for all matches for the given query.
+        Returns a sorted list of tuples containing ID, score,
+        and corresponding value column for all matches for the given query.
 
         """
         # we want to scale k because we might have ids in the top k
@@ -328,7 +375,18 @@ class SimilarityIndex(SearchIndex):
         k_scaled = round(k * k_factor * 2)
 
         if self.subset is not None:
-            selector = faiss.IDSelectorBatch(list(self.subset))
+            # subset contains ids, but we need to convert to index
+            # internal ids for the selector
+            sub_ids = []
+            for index in self.subset:
+                first_id = self.id_per_index[index]
+                if index + 1 < len(self.id_per_index):
+                    last_id = self.id_per_index[index + 1]
+                else:
+                    last_id = self.index.ntotal
+                sub_ids.extend(range(first_id, last_id))
+
+            selector = faiss.IDSelectorBatch(sub_ids)
         else:
             selector = None
 
@@ -354,19 +412,21 @@ class SimilarityIndex(SearchIndex):
             precision=self.config["precision"],
             embedding_dim=self.config["embedding_dim"],
         )
-        scores, indices = self.index.search(query_embeddings, k_scaled, **search_kwargs)
+        scores, ids = self.index.search(query_embeddings, k_scaled, **search_kwargs)
         dim = query_embeddings.shape[1] * (8 if is_binary else 1)
 
-        # deduplicate based on id
+        # deduplicate based on index, not id
         seen = set()
         deduped = []
-        for score, index in zip(scores[0], indices[0]):
-            if index < 0:
+        for score, id in zip(scores[0], ids[0]):
+            if id < 0:
                 break
-            elif index in seen:
-                continue
             elif len(deduped) >= k:
                 break
+
+            index = get_index_from_id(id, self.id_per_index)
+            if index in seen:
+                continue
 
             if is_binary:
                 # convert binary index score to [0, 1] range to more
@@ -380,7 +440,8 @@ class SimilarityIndex(SearchIndex):
 
             seen.add(index)
 
-            deduped.append((index, score))
+            column = get_column_from_id(id, self.id_per_index)
+            deduped.append((index, score, column))
 
         return deduped
 
@@ -427,13 +488,14 @@ class SimilarityIndex(SearchIndex):
         if self.subset is not None:
             subset = self.subset.intersection(ids)
         else:
-            subset = set(ids)
+            subset = SortedSet(ids)
 
         return SimilarityIndex(
             self.model,
             self.data,
             self.index,
             self.config,
+            self.id_per_index,
             subset,
         )
 
@@ -455,7 +517,7 @@ class SimilarityIndex(SearchIndex):
 
         """
         if self.subset is not None:
-            for id in sorted(self.subset):
+            for id in self.subset:
                 yield self.data.get_row(id)
         else:
             yield from self.data

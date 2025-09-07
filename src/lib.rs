@@ -5,7 +5,7 @@ mod utils;
 
 pub use data::IndexData;
 pub use mapping::Mapping;
-pub use prefix::{PrefixIndex, Score};
+pub use prefix::PrefixIndex;
 use pyo3::prelude::*;
 use utils::normalize;
 

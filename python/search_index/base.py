@@ -87,7 +87,7 @@ class SearchIndex:
         """
         ...
 
-    def __iter__(self) -> Iterator[str]:
+    def __iter__(self) -> Iterator[list[str]]:
         """
 
         Iterates over the index data.
